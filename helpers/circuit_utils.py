@@ -6,7 +6,7 @@ from fastf1.ergast import Ergast
 import requests
 from functools import lru_cache
 import logging
-from tqdm.notebook import tqdm
+from tqdm import tqdm 
 from IPython.display import display
 
 
@@ -85,23 +85,28 @@ def load_session(year, event_name, session_name):
 # --- ELEVATION LOOKUP ---
 
 @lru_cache(maxsize=None)
-def get_elevation(latitude, longitude):
-    """ 
-    Get the elevation of a single point based on coordinates.
-    
-    Parameters:
-    - latitude
-    - longitude
-
-    Returns single value - altitude above sea level in meters.
+def get_elevation(latitude: float, longitude: float,
+                  timeout: int = 10) -> float:
     """
-    url = f"https://api.open-elevation.com/api/v1/lookup?locations={latitude},{longitude}"
-    
-    response = requests.get(url)
-    data = response.json()
-    elevation = data["results"][0]["elevation"]
+    Single-point elevation (Copernicus GLO-90 DEM, 90 m resolution).
 
-    return elevation
+    Keeps the original per-point interface but hits Open-Meteo, whose
+    public limit is 600 calls/minute instead of 1 call/second.
+    """
+    url = (
+        "https://api.open-meteo.com/v1/elevation"
+        f"?latitude={latitude}&longitude={longitude}"
+    )
+
+    r = requests.get(url, timeout=timeout)
+    r.raise_for_status()                     # network / HTTP errors → exceptions
+
+    payload = r.json()
+    if "elevation" not in payload or payload["elevation"] is None:
+        raise RuntimeError("Open-Meteo returned no elevation")
+
+    return payload["elevation"][0]           # note: array, not dict
+
     
 # --- CIRCUIT METADATA ---
 
@@ -313,8 +318,7 @@ def build_profiles_for_season(year, circuit_metadata):
     - df_profiles: DataFrame with session-level metrics
     - df_skipped: DataFrame with skipped sessions and failure reasons
     """
-    from tqdm import tqdm
-
+    
     records = []
     skipped = []
 
@@ -420,4 +424,72 @@ def build_circuit_profile_df(start_year=2020, end_year=2025):
 
     print(f"\n✅ Done: {len(df_profiles)} sessions parsed, {len(df_skipped)} skipped.")
     return df_profiles, df_skipped
+    
 
+def update_profiles_file(cache_path="data/circuit_profiles.csv"):
+    """
+    Appends only the most recent sessions (not yet in the cached file).
+
+    Parameters:
+    - cache_path: str — Path to existing circuit_profiles CSV
+
+    Returns:
+    - df: Updated DataFrame
+    - skipped: List of skipped or failed sessions
+    """
+    if not Path(cache_path).exists():
+        raise FileNotFoundError(f"❌ Cannot update — cache file not found at: {cache_path}")
+
+    # Load existing cached data
+    existing_df = pd.read_csv(cache_path)
+    existing_sessions = set(existing_df.apply(lambda row: (row['year'], row['event'], row['session']), axis=1))
+
+    current_year = datetime.utcnow().year
+    schedule = ff1.get_event_schedule(current_year, backend='ergast')
+    now = datetime.utcnow()
+    past_races = schedule[schedule.Session1DateUtc < now]
+
+    # Define which sessions to track (fallback to both formats)
+    def get_session_list(format_type):
+        return ['FP1', 'FP2', 'FP3', 'Q', 'R'] if format_type == 'conventional' else ['FP1','S','SQ','SS','Q','R']
+
+    new_records = []
+    skipped = []
+
+    for _, row in past_races.iterrows():
+        event = row['EventName']
+        location = row['Location']
+        year = row['Date'].year
+        format_type = row['EventFormat']
+
+        for session_name in get_session_list(format_type):
+            key = (year, event, session_name)
+            if key in existing_sessions:
+                continue  # already in file
+
+            try:
+                print(f"📥 Appending {year} {event} {session_name}...")
+                session_df, failed = build_circuit_profile_df(year, year, only_specific={(event, session_name)})
+                if session_df.empty:
+                    raise ValueError("Empty result")
+                new_records.append(session_df)
+                if failed is not None:
+                    skipped.extend(failed.to_dict('records'))
+
+            except Exception as e:
+                print(f"⚠️ Failed to load {key}: {e}")
+                skipped.append({
+                    "year": year, "event": event, "session": session_name,
+                    "location": location, "reason": str(e)
+                })
+
+    # Merge and save if new data found
+    if new_records:
+        new_df = pd.concat(new_records, ignore_index=True)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        combined_df.to_csv(cache_path, index=False)
+        print(f"✅ Appended {len(new_df)} new session(s).")
+        return combined_df, pd.DataFrame(skipped) if skipped else None
+    else:
+        print("ℹ️ No new sessions found to append.")
+        return existing_df, None

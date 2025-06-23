@@ -10,7 +10,8 @@ from .circuit_utils import (
     get_circuit_corner_profile,
     get_drs_info,
     build_profiles_for_season,
-    build_circuit_profile_df
+    build_circuit_profile_df,
+    update_profiles_file
 )
 
-from .general import load_or_build_profiles
+from .general import (load_or_build_profiles, is_update_needed)
