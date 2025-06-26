@@ -8,6 +8,7 @@ from functools import lru_cache
 import logging
 from tqdm import tqdm 
 from IPython.display import display
+from pathlib import Path
 
 
 # Set pandas options
@@ -81,8 +82,63 @@ def load_session(year, event_name, session_name):
             "reason": str(e)
         }
 
+# WEATHER
+
+def get_weather_info(session, year, event_name, session_name):
+    """
+    Try to extract weather data from FastF1 session. Fallback to OpenF1 API if needed.
+
+    Parameters:
+    - session (FastF1.Session or None): Loaded FastF1 session, or None if fallback needed.
+    - year (int): Season year
+    - event_name (str): Event name (e.g., 'Bahrain Grand Prix')
+    - session_name (str): Session label ('FP1', 'Race', etc.)
+
+    Returns:
+    - dict with average air temp, track temp, and boolean rain presence
+    """
+    # --- Try FastF1 session ---
+    if session is not None and hasattr(session, "weather_data") and not session.weather_data.empty:
+        weather = session.weather_data
+        return {
+            "air_temp_avg": weather["AirTemp"].mean(),
+            "track_temp_avg": weather["TrackTemp"].mean(),
+            "rain_detected": weather["Rainfall"].max() > 0
+        }
+
+    # --- Fallback to OpenF1 ---
+    try:
+        session_map = {
+            "FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
+            "Q": "Qualifying", "Race": "Race", "SQ": "Sprint Qualifying",
+            "S": "Sprint", "SS": "Sprint Shootout"
+        }
+        api_session_name = session_map.get(session_name, session_name)
+
+        url = "https://api.openf1.org/v1/weather"
+        params = {"year": year, "session": api_session_name}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = pd.DataFrame(response.json())
+
+        if data.empty:
+            raise ValueError("No weather data from OpenF1")
+
+        return {
+            "air_temp_avg": data["air_temperature"].mean(),
+            "track_temp_avg": data["track_temperature"].mean(),
+            "rain_detected": (data["rainfall"] > 0).any()
+        }
+
+    except Exception as e:
+        print(f"⚠️ Weather fallback failed for {year} {event_name} {session_name}: {e}")
+        return {
+            "air_temp_avg": np.nan,
+            "track_temp_avg": np.nan,
+            "rain_detected": np.nan
+        }
         
-# --- ELEVATION LOOKUP ---
+# ELEVATION LOOKUP 
 
 @lru_cache(maxsize=None)
 def get_elevation(latitude: float, longitude: float,
@@ -380,6 +436,12 @@ def build_profiles_for_season(year, circuit_metadata):
             if not track_metrics:
                 raise ValueError("Missing telemetry metrics")
 
+            weather_data = get_weather_info(session, year, event_name, session_name) if session else {
+                "air_temp_avg": np.nan,
+                "track_temp_avg": np.nan,
+                "rain_percentage": np.nan
+            }
+            
             record = {
                 'year': year,
                 'event': event_name,
@@ -390,7 +452,8 @@ def build_profiles_for_season(year, circuit_metadata):
                 'telemetry_source': telemetry_source,
                 **drs_data,
                 **track_metrics,
-                **corner_data
+                **corner_data,
+                **weather_data
             }
 
             records.append(record)
@@ -407,7 +470,20 @@ def build_profiles_for_season(year, circuit_metadata):
     return pd.DataFrame(records), pd.DataFrame(skipped)
 
 
-def build_circuit_profile_df(start_year=2020, end_year=2025):
+def build_circuit_profile_df(start_year=2020, end_year=2025, only_specific=None):
+    """
+    Builds a DataFrame with circuit-level metrics for all practice sessions across seasons.
+
+    Parameters:
+    - start_year: int — First season to include
+    - end_year: int — Last season to include
+    - only_specific: set of (event_name, session_name) tuples to include selectively
+
+    Returns:
+    - df_profiles: DataFrame with circuit performance and layout characteristics
+    - df_skipped: DataFrame logging skipped sessions
+    """
+    
     all_profiles = []
     all_skipped = []
 
@@ -434,13 +510,13 @@ def update_profiles_file(cache_path="data/circuit_profiles.csv"):
     - cache_path: str — Path to existing circuit_profiles CSV
 
     Returns:
-    - df: Updated DataFrame
-    - skipped: List of skipped or failed sessions
+    - df: Updated DataFrame with new sessions
+    - skipped: DataFrame of skipped or failed sessions
     """
     if not Path(cache_path).exists():
         raise FileNotFoundError(f"❌ Cannot update — cache file not found at: {cache_path}")
 
-    # Load existing cached data
+    # Load existing cached data and define keys for existing sessions
     existing_df = pd.read_csv(cache_path)
     existing_sessions = set(existing_df.apply(lambda row: (row['year'], row['event'], row['session']), axis=1))
 
@@ -449,7 +525,6 @@ def update_profiles_file(cache_path="data/circuit_profiles.csv"):
     now = datetime.utcnow()
     past_races = schedule[schedule.Session1DateUtc < now]
 
-    # Define which sessions to track (fallback to both formats)
     def get_session_list(format_type):
         return ['FP1', 'FP2', 'FP3', 'Q', 'R'] if format_type == 'conventional' else ['FP1','S','SQ','SS','Q','R']
 
@@ -459,17 +534,21 @@ def update_profiles_file(cache_path="data/circuit_profiles.csv"):
     for _, row in past_races.iterrows():
         event = row['EventName']
         location = row['Location']
-        year = row['Date'].year
+        year = row['Session1DateUtc'].year  # ✅ FIXED LINE
         format_type = row['EventFormat']
 
         for session_name in get_session_list(format_type):
             key = (year, event, session_name)
             if key in existing_sessions:
-                continue  # already in file
+                continue
 
             try:
                 print(f"📥 Appending {year} {event} {session_name}...")
-                session_df, failed = build_circuit_profile_df(year, year, only_specific={(event, session_name)})
+                session_df, failed = build_circuit_profile_df(
+                    start_year=year,
+                    end_year=year,
+                    only_specific={(event, session_name)}  # expects support in your function
+                )
                 if session_df.empty:
                     raise ValueError("Empty result")
                 new_records.append(session_df)
@@ -483,7 +562,6 @@ def update_profiles_file(cache_path="data/circuit_profiles.csv"):
                     "location": location, "reason": str(e)
                 })
 
-    # Merge and save if new data found
     if new_records:
         new_df = pd.concat(new_records, ignore_index=True)
         combined_df = pd.concat([existing_df, new_df], ignore_index=True)

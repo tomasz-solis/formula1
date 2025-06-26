@@ -2,7 +2,8 @@ import os
 import pandas as pd
 from datetime import datetime, timedelta
 import fastf1 as ff1
-from .circuit_utils import update_profiles_file
+from .circuit_utils import update_profiles_file, build_circuit_profile_df
+
 
 def is_update_needed(cache_path: str, season: int = datetime.now().year) -> bool:
     """

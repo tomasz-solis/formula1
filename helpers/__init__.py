@@ -4,6 +4,7 @@
 from .circuit_utils import (
     load_session,
     get_elevation,
+    get_weather_info,
     get_circuits,
     get_all_circuits,
     extract_track_metrics,
