@@ -1,24 +1,65 @@
-# Formula 1 predictor
+# Formula 1 Predictor
 
-## Problems statement
-1. Which tracks are similar in terms of its characteristics?
-- High/medium/low speed corners
-- Full throttle rate
-- Altitude
-- Weather
-2. Which drivers will perform well in the next race?
-- Predicting the probability of winning => Classification
-- Predicting the ranking => Ranking
-3. Which teams will perform well in the next race?
-- Predicting the probability of winning => Classification
-- Predicting the ranking => Ranking
-4. Red flag likelihood in every stage of the race - based on historical races (last X years)
-5. Safety Car likelihood in every stage of the race - based on historical races (last X years)
+A modular toolkit for extracting, profiling and predicting Formula 1 performance, built on top of FastF1 (with OpenF1 fallback) and Ergast.
 
-Problems will be solved gradually as answers to the next question often requires the info from the previous one. 
+---
 
-I will not be considering tyre load as it is car specific and requires detailed knowledge of all cars (weight, weight distribution, drag, aerodynamic centre of pressure and much more). All models will be generalizing the performance based on session performance to minimise the impact of variables introduced by teams updates or setup. 
+## Features
 
-Only pre-Qualifying sessions (Free Practice sessions) will be considered as Qualifying is one of the sessions I would like to predict. 
-- FP1/FP2/FP3 for conventional race weekends
-- FP1 for sprint race weekends
+1. **Circuit Typology & Profiles**  
+   - Corner counts by speed (slow/medium/fast), chicanes  
+   - Braking-event counts  
+   - Average & top speed, speed-zone percentages  
+   - DRS zone counts & lengths  
+   - Weather (air & track temperature, rainfall)  
+   - Altitude from Open-Meteo  
+
+2. **Driver-Level Telemetry Features**  
+   - Full-throttle ratio  
+   - Tire-degradation slope (per-stint lap-time trend)  
+   - DRS flap activations (bit-mask aware, 2018–2025)  
+   - Braking intensity (max/mean decel in g)  
+
+3. **Automated Caching & Incremental Updates**  
+   - Stores all circuit profiles in `data/circuit_profiles.csv`  
+   - On race-weekends, automatically appends only sessions that have *actually started*  
+   - Uses FastF1 → OpenF1 fallback for missing sessions  
+   - Skips any session whose UTC start date is still in the future  
+
+4. **Predictive Modeling Ready**  
+   - Merge circuit and driver features into a single training table  
+   - Easily pipeline into scikit-learn for classification (win probability), regression (lap-time ranking) or clustering (track typology)  
+
+---
+
+## Installation
+
+```bash
+git clone https://github.com/your-user/f1-predictor.git
+cd f1-predictor
+pip install -r requirements.txt
+```
+
+# How it works?
+
+1. Session Loading
+Tries FastF1 (with telemetry + laps), and if that fails or no laps are present, falls back to OpenF1 REST API.
+
+2. Circuit Profiles
+Loops over all past sessions in each season’s Ergast-provided schedule, extracts telemetry & metadata, and writes to a cache.
+
+3. Incremental Updates
+On subsequent runs, only looks at events whose FP1 has passed AND each individual session’s scheduled UTC timestamp ≤ now.
+
+4. Driver Features
+For each driver’s fastest lap, telemetry is parsed to compute throttle ratio, braking events, DRS activations, tyre wear slope, etc.
+
+5. Merging & Modeling
+Circuit & driver tables are joined on (year, event, session, location), ready for scikit-learn pipelines (scaling, PCA, clustering or supervised models).
+
+# Future additions:
+
+- Track Typology Labels
+- Heatmaps per Track Cluster
+- Predictive Power of FP1-2-3 for Q & R
+- Predicting Quali and Race order

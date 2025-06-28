@@ -20,6 +20,92 @@ pd.set_option('display.max_colwidth', None)
 logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 
+# --- basic helpers ---
+
+def _session_date_col(sess: str) -> str:
+    """Map our session label → the matching Schedule column name."""
+    return {
+        "FP1": "Session1DateUtc",
+        "FP2": "Session2DateUtc",
+        "FP3": "Session3DateUtc",
+        "SQ":  "Session2DateUtc",   # Sprint Quali lives in slot #2
+        "S":   "Session3DateUtc",   # Sprint lives in slot #3
+        "Q":   "Session4DateUtc",
+        "R":   "Session5DateUtc",
+    }[sess]
+
+def _session_list(event_format: str) -> list[str]:
+    """
+    Map EventFormat → list of sessions expected to collect.
+
+    conventional          → FP1 FP2 FP3 Q R
+    sprint_*              → FP1 SQ  S   Q R
+    testing               → (return []) - Tests are ignored
+    """
+    fmt = (event_format or "").lower()
+
+    if fmt == "testing":
+        return []                      # ← nothing to fetch
+
+    if fmt.startswith("sprint"):
+        return ["FP1", "SQ", "S", "Q", "R"]
+
+    # conventional (default)
+    return ["FP1", "FP2", "FP3", "Q", "R"]
+
+
+def _official_schedule(year: int) -> pd.DataFrame:
+    """Try FastF1 API first, fall back to F1 API with a warning."""
+    try:
+        return ff1.get_event_schedule(year, backend="fastf1")
+    except Exception as e:        # noqa: BLE001
+        print(f"⚠️  F1 API schedule failed → {e}  (falling back to offcial F1 API)")
+        return ff1.get_event_schedule(year, backend="f1timing")
+
+
+def _sessions_completed(format_type: str,
+                        fp1_utc: datetime,
+                        now: datetime) -> list[str]:
+    """
+    Given a single weekend’s FP1 UTC start time, return which session
+    labels have *already* started (and so should be fetchable).
+    """
+    # how many hours after FP1 each session typically begins
+    mapping = {
+        "conventional": [('FP1',  0), ('FP2',  4), ('FP3', 24), ('Q', 28), ('R', 52)],
+        "sprint":       [('FP1',  0), ('SQ',  4), ('S', 28),  ('Q', 28), ('R', 52)]
+    }
+    key = "sprint" if format_type.startswith("sprint") else "conventional"
+    return [
+        label for label, offset in mapping[key]
+        if fp1_utc + timedelta(hours=offset) <= now
+    ]
+    
+
+def _completed_sessions(schedule: pd.DataFrame,
+                        now: datetime) -> list[tuple[int,str,str]]:
+    """
+    Scan the full season schedule and return a list of
+    (year, event_name, session_label) for all *finished* sessions
+    that you should attempt to append.
+    """
+    todo: list[tuple[int,str,str]] = []
+
+    for _, ev in schedule.iterrows():
+        fmt      = str(ev.EventFormat).lower()
+        name     = ev.EventName or ""
+        fp1_utc  = ev.Session1DateUtc
+        year_tag = fp1_utc.year
+
+        # ── skip *any* pre-season or in-season testing events ───────────────
+        if fmt == "testing" or "test" in name.lower():
+            continue
+
+        for ses in _sessions_completed(fmt, fp1_utc, now):
+            todo.append((year_tag, name, ses))
+
+    return todo
+
 
 # --- Session loading and metadata ---
 
@@ -368,7 +454,7 @@ def build_profiles_for_season(
     circuit_metadata: pd.DataFrame,
     *,
     only_specific: set[tuple[str, str]] | None = None,
-):
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Create session-level circuit-performance rows for **one** F1 season.
 
@@ -376,104 +462,99 @@ def build_profiles_for_season(
     ----------
     year : int
         Season to process (e.g. ``2025``).
-    circuit_metadata : pandas.DataFrame
-        Output of ``get_all_circuits`` – contains altitude and lat/lon per track.
-    only_specific : {(event_name, session_name), …} | None, keyword-only
-        If given, *process only* those (event, session) pairs.  
-        When ``None`` (default) every past session of the year is processed.
-        ``update_profiles_file`` sets this filter when it wants to append just
-        the newest sessions (FP1, FP2 …) instead of rebuilding everything.
+    circuit_metadata : DataFrame
+        Output of ``get_all_circuits`` – contains altitude, lat/lon …
+    only_specific : {(event, session), …}, optional
+        When given process *only* those (event, session) pairs (used by
+        ``update_profiles_file``).  When ``None`` every past session is parsed.
 
     Returns
     -------
-    df_profiles : pandas.DataFrame
-        One row per processed session containing telemetry / DRS / weather …
-    df_skipped : pandas.DataFrame
-        Log of sessions that failed or were unavailable.
+    df_profiles, df_skipped : DataFrame, DataFrame
     """
-    records, skipped = [], []
+    records: list[dict] = []
+    skipped: list[dict] = []
 
-    # 1. get schedule 
+    # 1 ─ get schedule
     try:
-        sched   = ff1.get_event_schedule(year, backend="ergast")
-        past    = sched[sched.Session1DateUtc < datetime.utcnow()]
+        sched = _official_schedule(year)
+        past  = sched[sched.Session1DateUtc < datetime.utcnow()]
     except Exception as e:
         skipped.append(
             {"year": year, "event": None, "session": None, "reason": str(e)}
         )
         return pd.DataFrame(), pd.DataFrame(skipped)
 
-    # 2. iterate over events / sessions 
-    for _, row in past.iterrows():
-        event = row.EventName
-        loc   = row.Location
-        fmt   = row.EventFormat
-        sess_list = (
-            ["FP1", "FP2", "FP3", "Q", "R"]
-            if fmt == "conventional"
-            else ["FP1", "S", "SS", "SQ", "Q", "R"]
-        )
+    # 2 ─ iterate events/sessions
+    for _, ev in past.iterrows():
+        ev_name = ev.EventName
+        loc     = ev.Location
+        fmt     = str(ev.EventFormat).lower()
 
-        for sess in sess_list:
-            #  filter when called from update_profiles_file 
-            if only_specific and (event, sess) not in only_specific:
-                continue
+        sessions = _session_list(fmt)
+
+        for sess in sessions:
+            if only_specific and (ev_name, sess) not in only_specific:
+                continue                      # not requested → skip
 
             try:
-                # load session (FastF1 → OpenF1 fallback) 
-                s_info = load_session(year, event, sess)
+                # 2-a  load data
+                s_info = load_session(year, ev_name, sess)
                 if s_info["status"] == "error":
                     raise ValueError(s_info["reason"])
 
-                tele_src = s_info["source"]
+                tele_src = s_info["source"]      # fastf1 / openf1
                 laps     = s_info["laps"]
-                session  = s_info["session"]
+                session  = s_info["session"]     # FastF1.Session or None
 
                 if laps is None or laps.empty:
                     raise ValueError("Lap data missing")
 
-                # lap length
-                if session and tele_src == "fastf1":
+                # 2-b  basic lap length
+                if session is not None:          # FastF1
                     try:
-                        lap_len = (
-                            session.laps.pick_fastest()
-                            .get_car_data().add_distance()["Distance"].max()
+                        fast_lap = session.laps.pick_fastest()
+                        lap_len  = (
+                            fast_lap.get_car_data()
+                            .add_distance()["Distance"].max()
                         )
                     except Exception:
                         lap_len = np.nan
-                else:  # OpenF1 fallback
+                else:                            # OpenF1 fallback
                     lap_len = (
                         laps.groupby("driver_number")["lap_distance"].max().max()
                     )
 
-                # telemetry-derived metrics
-                drs = (
-                    get_drs_info(session, lap_len, event, sess)
-                    if session is not None
-                    else {"num_drs_zones": np.nan,
-                          "drs_total_len_m": np.nan,
-                          "drs_pct_of_lap": np.nan}
-                )
-                tmet  = extract_track_metrics(session)          if session else None
-                cmet  = get_circuit_corner_profile(session)     if session else None
-                wmet  = get_weather_info(session, year, event, sess)
+                # 2-c  telemetry-derived metrics
+                drs  = get_drs_info(session, lap_len, ev_name, sess) \
+                       if session is not None else {
+                           "num_drs_zones": np.nan,
+                           "drs_total_len_m": np.nan,
+                           "drs_pct_of_lap": np.nan,
+                       }
+
+                tmet = extract_track_metrics(session)           if session else None
+                cmet = get_circuit_corner_profile(session)      if session else None
+                wmet = get_weather_info(session, year, ev_name, sess)
 
                 if not tmet:
                     raise ValueError("Missing telemetry metrics")
 
-                # altitude lookup
+                # 2-d  altitude lookup
                 try:
-                    alt = circuit_metadata.loc[
-                        circuit_metadata["location"] == loc, "altitude"
-                    ].iloc[0]
+                    alt = (
+                        circuit_metadata
+                        .loc[circuit_metadata["location"] == loc, "altitude"]
+                        .iloc[0]
+                    )
                 except IndexError:
                     alt = np.nan
 
-                # collect row
+                # 2-e  assemble row
                 records.append(
                     {
                         "year": year,
-                        "event": event,
+                        "event": ev_name,
                         "location": loc,
                         "session": sess,
                         "real_altitude": alt,
@@ -487,7 +568,7 @@ def build_profiles_for_season(
                 skipped.append(
                     {
                         "year": year,
-                        "event": event,
+                        "event": ev_name,
                         "session": sess,
                         "reason": str(e),
                     }
@@ -538,113 +619,85 @@ def build_circuit_profile_df(
     )
     return df_profiles, df_skipped
 
-
-def _sessions_completed(format_type: str,
-                        fp1_utc:      datetime,
-                        now:          datetime | None = None) -> list[str]:
-    """
-    Return the list of session labels that *should already be completed*
-    at the moment `now` (UTC).
-
-    We assume fixed offsets from FP1.  These are conservative: if a session
-    starts 30-60 min earlier/later at a particular venue it doesn’t matter.
-
-    Offsets (h after FP1)
-       conventional weekend            sprint weekend
-       ─────────────────────            ──────────────
-       FP1   0                          FP1   0
-       FP2   4                          SQ    4   (Sprint Quali – Fri)
-       FP3  24                          S    28   (Sprint – Sat)
-       Q    28                          Q    28   (Quali – Sat)
-       R    52                          R    52   (Race – Sun)
-    """
-    if now is None:
-        now = datetime.utcnow()
-
-    elapsed = (now - fp1_utc).total_seconds() / 3600
-    schedule = (
-        [('FP1', 0), ('FP2', 4), ('FP3', 24), ('Q', 28), ('R', 52)]
-        if format_type == 'conventional'
-        else [('FP1', 0), ('SQ', 4), ('S', 28), ('Q', 28), ('R', 52)]
-    )
-    return [label for label, offset in schedule if elapsed >= offset]
     
-
-def update_profiles_file(cache_path: str = "data/circuit_profiles.csv"):
+def update_profiles_file(
+    cache_path:  str  = "data/circuit_profiles.csv",
+    start_year:  int  = None,
+    end_year:    int  = None
+):
     """
-    Append **only the sessions that have actually finished** but are still
-    missing from the cached CSV.
-
-    Parameters
-    ----------
-    cache_path : str
-        Path to ``circuit_profiles.csv``
-
-    Returns
-    -------
-    df  : pandas.DataFrame
-        Updated circuit profile table.
-    skipped : pandas.DataFrame | None
-        Sessions we tried but could not fetch.
+    Append sessions that (a) have already started and (b) are not yet cached.
     """
     path = Path(cache_path)
     if not path.exists():
-        raise FileNotFoundError(f"❌ Cache not found →  {cache_path}")
+        raise FileNotFoundError(f"Cache not found at {cache_path}")
 
-    existing_df       = pd.read_csv(path)
-    existing_sessions = {
-        (r.year, r.event, r.session) for r in existing_df.itertuples()
+    existing = pd.read_csv(path)
+    existing_keys = {
+        (r.year, r.event, r.session)
+        for r in existing.itertuples()
     }
 
-    utc_now   = datetime.utcnow()
-    season    = utc_now.year
-    schedule  = ff1.get_event_schedule(season, backend="ergast")
+    now     = datetime.utcnow()
+    sy      = start_year or now.year
+    ey      = end_year   or sy
 
-    # Consider ONLY race weekends whose FP1 has already occurred
-    finished_fp1 = schedule[schedule.Session1DateUtc < utc_now]
+    new_chunks = []
+    skipped    = []
 
-    new_chunks: list[pd.DataFrame] = []
-    skipped:     list[dict]        = []
+    for year in range(sy, ey + 1):
+        sched     = _official_schedule(year)
+        # only events whose FP1 has begun
+        completed = sched[sched.Session1DateUtc < now]
 
-    for _, ev in finished_fp1.iterrows():
-        ev_name  = ev.EventName
-        ev_fmt   = ev.EventFormat        # conventional / sprint_qualifying
-        fp1_utc  = ev.Session1DateUtc
-        year_tag = fp1_utc.year          # should equal `season`
+        for _, ev in completed.iterrows():
+            ev_name  = ev.EventName
+            ev_fmt   = ev.EventFormat
+            sess_list = _session_list(ev_fmt)
 
-        # sessions that should already have telemetry
-        for ses in _sessions_completed(ev_fmt, fp1_utc, utc_now):
-            key = (year_tag, ev_name, ses)
-            if key in existing_sessions:
-                continue       # already cached
+            for sess in sess_list:
+                # —— NEW: skip any session whose own timestamp is still in the future
+                col = _session_date_col(sess)
+                sess_dt = getattr(ev, col, None)
+                if sess_dt is None or sess_dt > now:
+                    # either missing in the schedule or not yet started
+                    continue
 
-            print(f"📥 appending {key} …")
-            try:
-                df_ok, df_fail = build_circuit_profile_df(
-                    start_year=year_tag,
-                    end_year=year_tag,
-                    only_specific={(ev_name, ses)},
-                )
-                if df_ok.empty:
-                    raise ValueError("no data returned")
-                new_chunks.append(df_ok)
-                if not df_fail.empty:
-                    skipped.extend(df_fail.to_dict("records"))
+                key = (year, ev_name, sess)
+                if key in existing_keys:
+                    continue
 
-            except Exception as e:
-                print(f"⚠️ {key} failed → {e}")
-                skipped.append(dict(year=year_tag, event=ev_name,
-                                    session=ses, reason=str(e)))
+                print(f"📥  appending {key} …")
+                try:
+                    df_ok, df_fail = build_circuit_profile_df(
+                        start_year    = year,
+                        end_year      = year,
+                        only_specific = {(ev_name, sess)}
+                    )
+                    if df_ok.empty:
+                        raise ValueError("no data returned")
+                    new_chunks.append(df_ok)
+                    if not df_fail.empty:
+                        skipped.extend(df_fail.to_dict("records"))
 
-    # ── write back
+                except Exception as e:
+                    print(f"⚠️ failed to append {key} → {e}")
+                    skipped.append({
+                        "year":    year,
+                        "event":   ev_name,
+                        "session": sess,
+                        "reason":  str(e)
+                    })
+
     if new_chunks:
-        combined = pd.concat([existing_df, *new_chunks], ignore_index=True)
-        combined.to_csv(path, index=False)
-        print(f"✅ added {sum(len(x) for x in new_chunks)} row(s).")
-        return combined, (pd.DataFrame(skipped) if skipped else None)
+        out = pd.concat([existing, *new_chunks], ignore_index=True)
+        out.to_csv(path, index=False)
+        total = sum(len(df) for df in new_chunks)
+        print(f"✅ added {total} row(s).")
+        return out, (pd.DataFrame(skipped) if skipped else None)
 
     print("ℹ️ No new sessions to append.")
-    return existing_df, None
+    return existing, None
 
 
 def is_update_needed(cache_path: str,
@@ -658,22 +711,18 @@ def is_update_needed(cache_path: str,
     2. If *today* lies **inside** an ongoing race-weekend
        (Session1DateUtc ≤ now ≤ Session1DateUtc + 4 days) → True
     3. Else, look at the *next* race in the schedule:
-       • return **True** once we are within *6 h before* FP1
+       • return **True** once within *6 h before* FP1
        • otherwise **False**
-
-    This fixes the earlier issue where—once FP1 had already happened—the
-    function returned *False* because the *“next”* race was the one **after**
-    the weekend in progress.
     """
     # 0. missing cache → definitely rebuild 
     if not os.path.exists(cache_path):
         return True
 
     try:
-        sched = ff1.get_event_schedule(season, backend="ergast")
+        sched = _official_schedule(season)
         now   = datetime.utcnow()
 
-        # 1. are we *inside* a race weekend already?
+        # 1. *inside* a race weekend already?
         weekend_length = timedelta(days=4)          # FP1 .. Race (+buffer)
         ongoing = sched[
             (sched.Session1DateUtc <= now)
@@ -696,20 +745,26 @@ def is_update_needed(cache_path: str,
         return True  # safest fallback
 
 
-def load_or_build_profiles(cache_path="data/circuit_profiles.csv", start_year=2020, end_year=2025):
+def load_or_build_profiles(
+    cache_path: str = "data/circuit_profiles.csv",
+    start_year: int  = 2020,
+    end_year:   int  = None
+):
     """
     Load cached profiles if still valid; else append new race or rebuild from scratch.
 
-    Parameters:
-    - cache_path (str): Path to cached CSV file.
-    - start_year (int): First season to include if rebuilding.
-    - end_year (int): Last season to include.
-
-    Returns:
-    - df: DataFrame of circuit profiles.
-    - skipped: Skipped sessions (or None if cache used)
+    Parameters
+    ----------
+    cache_path : str
+        Path to cached CSV file.
+    start_year : int
+        First season to include if (re)building.
+    end_year : int | None
+        Last season to include; defaults to start_year if not given.
     """
-    # If cache missing → rebuild everything
+    end_year = end_year or start_year
+
+    # 1) no cache → full rebuild
     if not os.path.exists(cache_path):
         print("📂 No cache found. Rebuilding full dataset...")
         df, skipped = build_circuit_profile_df(start_year, end_year)
@@ -717,11 +772,11 @@ def load_or_build_profiles(cache_path="data/circuit_profiles.csv", start_year=20
         df.to_csv(cache_path, index=False)
         return df, skipped
 
-    # If new race weekend → update
-    if is_update_needed(cache_path, season=end_year):
+    # 2) cache exists & race weekend started → incremental update
+    if is_update_needed(cache_path, season=datetime.utcnow().year):
         print("🔁 Race weekend started — updating recent sessions only...")
-        return update_profiles_file(cache_path)
+        return update_profiles_file(cache_path, start_year, end_year)
 
-    # Otherwise, use cached data
+    # 3) otherwise just load the file
     print("✅ Using cached circuit profile file.")
     return pd.read_csv(cache_path), None
