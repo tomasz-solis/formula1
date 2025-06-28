@@ -1,16 +1,31 @@
-import fastf1 as ff1
-import pandas as pd
-from datetime import datetime, timedelta
-import numpy as np
-from fastf1.ergast import Ergast
-import requests
-from functools import lru_cache
-import logging
-from tqdm import tqdm 
-from IPython.display import display
-from pathlib import Path
+#--------------------------------------------------------------------------------------------------------------------------
+# Imports
+#--------------------------------------------------------------------------------------------------------------------------
 import os
+import logging
 
+from pathlib import Path
+from datetime import datetime, timedelta
+from functools import lru_cache
+
+import fastf1 as ff1
+import requests
+import numpy as np
+import pandas as pd
+from fastf1.ergast import Ergast
+from tqdm import tqdm
+import plotly.graph_objects as go
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+
+
+#--------------------------------------------------------------------------------------------------------------------------
+# Basic setup
+#--------------------------------------------------------------------------------------------------------------------------
 
 # Set pandas options
 pd.set_option('display.max_columns', None)
@@ -20,7 +35,9 @@ pd.set_option('display.max_colwidth', None)
 logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 
-# --- basic helpers ---
+#--------------------------------------------------------------------------------------------------------------------------
+# Basic helpers
+#--------------------------------------------------------------------------------------------------------------------------
 
 def _session_date_col(sess: str) -> str:
     """Map our session label → the matching Schedule column name."""
@@ -97,7 +114,7 @@ def _completed_sessions(schedule: pd.DataFrame,
         fp1_utc  = ev.Session1DateUtc
         year_tag = fp1_utc.year
 
-        # ── skip *any* pre-season or in-season testing events ───────────────
+        #  skip *any* pre-season or in-season testing events - due to their nature
         if fmt == "testing" or "test" in name.lower():
             continue
 
@@ -106,8 +123,9 @@ def _completed_sessions(schedule: pd.DataFrame,
 
     return todo
 
-
-# --- Session loading and metadata ---
+#--------------------------------------------------------------------------------------------------------------------------
+# Session loading and metadata
+#--------------------------------------------------------------------------------------------------------------------------
 
 def load_session(year, event_name, session_name):
     """
@@ -169,7 +187,7 @@ def load_session(year, event_name, session_name):
             "reason": str(e)
         }
 
-# WEATHER
+# Weather
 
 def get_weather_info(session, year, event_name, session_name):
     """
@@ -225,7 +243,7 @@ def get_weather_info(session, year, event_name, session_name):
             "rain_detected": np.nan
         }
         
-# ELEVATION LOOKUP 
+# Elevation
 
 @lru_cache(maxsize=None)
 def get_elevation(latitude: float, longitude: float,
@@ -251,7 +269,7 @@ def get_elevation(latitude: float, longitude: float,
     return payload["elevation"][0]           # note: array, not dict
 
     
-# --- CIRCUIT METADATA ---
+# Circuit metadata
 
 def get_circuits(season):
     """
@@ -312,7 +330,7 @@ def get_all_circuits(start_year=2020, end_year=2025):
     
     return deduped
 
-# --- Telemetry extraction ---
+# Telemetry extraction
 
 def extract_track_metrics(session):
     """
@@ -350,6 +368,7 @@ def extract_track_metrics(session):
         print(f"⚠️ Failed to extract metrics: {e}")
         return None
 
+# Corners
 
 def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
     """
@@ -394,6 +413,7 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
         print(f"⚠️ Corner profile failed: {e}")
         return None
 
+# DRS
 
 def get_drs_info(session, track_length, event=None, session_name=None):
     """
@@ -447,7 +467,9 @@ def get_drs_info(session, track_length, event=None, session_name=None):
         }
 
 
-# --- Main builder ---
+#--------------------------------------------------------------------------------------------------------------------------
+# Main profile builders
+#--------------------------------------------------------------------------------------------------------------------------
 
 def build_profiles_for_season(
     year: int,
@@ -619,7 +641,10 @@ def build_circuit_profile_df(
     )
     return df_profiles, df_skipped
 
-    
+#--------------------------------------------------------------------------------------------------------------------------
+# Profile updates
+#--------------------------------------------------------------------------------------------------------------------------
+
 def update_profiles_file(
     cache_path:  str  = "data/circuit_profiles.csv",
     start_year:  int  = None,
@@ -780,3 +805,117 @@ def load_or_build_profiles(
     # 3) otherwise just load the file
     print("✅ Using cached circuit profile file.")
     return pd.read_csv(cache_path), None
+
+#--------------------------------------------------------------------------------------------------------------------------
+# Track profile clustering
+#--------------------------------------------------------------------------------------------------------------------------
+
+def fit_track_clusters(
+    df_profiles: pd.DataFrame,
+    group_cols: list[str] = ['event','year'],
+    feat_cols: list[str] = None,
+    scaler=None,
+    clusterer=None,
+    do_pca: bool = False,
+    n_components: int = 2
+) -> tuple[pd.DataFrame, Pipeline]:
+    """
+    Fit clustering (and optional PCA) per track.
+    Returns the per-track cluster assignments and the fitted pipeline.
+
+    Parameters:
+    - df_profiles: session-level data
+    - group_cols: columns to define each “track” group
+    - feat_cols: numeric columns to use for clustering
+    - scaler: any scaler (Default: StandardScaler)
+    - clusterer: any clustering estimator (Default: KMeans(n_clusters=5))
+    - do_pca: whether to include PCA in the pipeline
+    Returns:
+      • track_profile: one row per group with PC dims + cluster labels  
+      • pipe: the fitted sklearn Pipeline (so you can call pipe.predict on new data)
+    """
+    # Determine features
+    feat_cols = feat_cols or df_profiles.select_dtypes(include='number').columns.tolist()
+    # Aggregate per track
+    track_features = (
+        df_profiles
+        .groupby(group_cols)[feat_cols]
+        .mean()
+        .reset_index()
+    )
+    X = track_features[feat_cols]
+
+    # Build pipeline
+    steps = [
+        ('imputer', SimpleImputer()),
+        ('scaler', scaler or StandardScaler())
+    ]
+    if do_pca:
+        steps.append(('pca', PCA(n_components=n_components, random_state=42)))
+    steps.append(('cluster', clusterer or KMeans(n_clusters=5, random_state=42)))
+    pipe = Pipeline(steps)
+
+    # Fit clusters
+    labels = pipe.fit_predict(X)
+    track_profile = track_features.copy()
+    track_profile['cluster'] = labels.astype(str)
+
+    # PCA coords if requested
+    if do_pca:
+        X_imp = pipe.named_steps['imputer'].transform(X)
+        X_scl = pipe.named_steps['scaler'].transform(X_imp)
+        pcs = pipe.named_steps['pca'].transform(X_scl)
+        track_profile[['PC1', 'PC2']] = pcs
+
+    return track_profile, pipe
+
+#--------------------------------------------------------------------------------------------------------------------------
+# Charts
+#--------------------------------------------------------------------------------------------------------------------------
+
+def plot_cluster_radar(df_profiles: pd.DataFrame, categories: list[str], cluster_col: str = 'cluster', normalize: bool = True):
+    """
+    Build and display a Plotly radar chart where each cluster's mean feature values
+    are plotted around a circle. Optionally normalizes each feature to [0,1].
+
+    Parameters:
+    -------------
+    df_profiles : pd.DataFrame
+        DataFrame containing individual samples with cluster assignments.
+    categories : list[str]
+        List of column names to include in the radar chart.
+    cluster_col : str
+        Name of the column in df_profiles holding cluster labels.
+    normalize : bool
+        If True, scales each feature across clusters to the [0,1] range.
+    """
+    # aggregate
+    cluster_norm = (
+        df_profiles
+        .groupby(cluster_col)[categories]
+        .mean()
+        .apply(lambda col: (col - col.min()) / (col.max() - col.min()), axis=0)
+        .reset_index()
+    ) if normalize else (
+        df_profiles
+        .groupby(cluster_col)[categories]
+        .mean()
+        .reset_index()
+    )
+
+    fig = go.Figure()
+    for _, row in cluster_norm.iterrows():
+        fig.add_trace(go.Scatterpolar(
+            r=row[categories].tolist(),
+            theta=categories,
+            fill='toself',
+            name=f'Cluster {row[cluster_col]}'
+        ))
+    # set range based on normalize flag
+    rrange = [0,1] if normalize else None
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=rrange)),
+        title="Driving Style Radar per Cluster",
+        showlegend=True
+    )
+    fig.show()
