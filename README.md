@@ -59,7 +59,6 @@ Circuit & driver tables are joined on (year, event, session, location), ready fo
 
 # Future additions:
 
-- Track Typology Labels
 - Heatmaps per Track Cluster
 - Predictive Power of FP1-2-3 for Q & R
 - Predicting Quali and Race order
