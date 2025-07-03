@@ -1,275 +1,31 @@
-#--------------------------------------------------------------------------------------------------------------------------
-# Imports
-#--------------------------------------------------------------------------------------------------------------------------
-import os
-import logging
-
-from pathlib import Path
-from datetime import datetime, timedelta
-from functools import lru_cache
-
+"""
+Utilities focused on circuit geometry & track‑level analytics.
+"""
+from __future__ import annotations
+import numpy as np, pandas as pd
 import fastf1 as ff1
-import requests
-import numpy as np
-import pandas as pd
 from fastf1.ergast import Ergast
+from pathlib import Path
+from typing import List
+from datetime import datetime
 from tqdm import tqdm
-import plotly.graph_objects as go
-
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
+import plotly.graph_objects as go
+from .general_utils import (_official_schedule, _session_list,
+                            _session_date_col, load_session, get_weather_info)
 
-
-#--------------------------------------------------------------------------------------------------------------------------
-# Basic setup
-#--------------------------------------------------------------------------------------------------------------------------
-
-# Set pandas options
-pd.set_option('display.max_columns', None)
-pd.set_option('display.max_colwidth', None)
-
-# Suppress FastF1 INFO and DEBUG messages
-logging.getLogger("fastf1").setLevel(logging.ERROR)
-logging.getLogger().setLevel(logging.ERROR)
-
-#--------------------------------------------------------------------------------------------------------------------------
-# Basic helpers
-#--------------------------------------------------------------------------------------------------------------------------
-
-def _session_date_col(sess: str) -> str:
-    """Map our session label → the matching Schedule column name."""
-    return {
-        "FP1": "Session1DateUtc",
-        "FP2": "Session2DateUtc",
-        "FP3": "Session3DateUtc",
-        "SQ":  "Session2DateUtc",   # Sprint Quali lives in slot #2
-        "S":   "Session3DateUtc",   # Sprint lives in slot #3
-        "Q":   "Session4DateUtc",
-        "R":   "Session5DateUtc",
-    }[sess]
-
-def _session_list(event_format: str) -> list[str]:
-    """
-    Map EventFormat → list of sessions expected to collect.
-
-    conventional          → FP1 FP2 FP3 Q R
-    sprint_*              → FP1 SQ  S   Q R
-    testing               → (return []) - Tests are ignored
-    """
-    fmt = (event_format or "").lower()
-
-    if fmt == "testing":
-        return []                      # ← nothing to fetch
-
-    if fmt.startswith("sprint"):
-        return ["FP1", "SQ", "S", "Q", "R"]
-
-    # conventional (default)
-    return ["FP1", "FP2", "FP3", "Q", "R"]
-
-
-def _official_schedule(year: int) -> pd.DataFrame:
-    """Try FastF1 API first, fall back to F1 API with a warning."""
-    try:
-        return ff1.get_event_schedule(year, backend="fastf1")
-    except Exception as e:        # noqa: BLE001
-        print(f"⚠️  F1 API schedule failed → {e}  (falling back to offcial F1 API)")
-        return ff1.get_event_schedule(year, backend="f1timing")
-
-
-def _sessions_completed(format_type: str,
-                        fp1_utc: datetime,
-                        now: datetime) -> list[str]:
-    """
-    Given a single weekend’s FP1 UTC start time, return which session
-    labels have *already* started (and so should be fetchable).
-    """
-    # how many hours after FP1 each session typically begins
-    mapping = {
-        "conventional": [('FP1',  0), ('FP2',  4), ('FP3', 24), ('Q', 28), ('R', 52)],
-        "sprint":       [('FP1',  0), ('SQ',  4), ('S', 28),  ('Q', 28), ('R', 52)]
-    }
-    key = "sprint" if format_type.startswith("sprint") else "conventional"
-    return [
-        label for label, offset in mapping[key]
-        if fp1_utc + timedelta(hours=offset) <= now
-    ]
-    
-
-def _completed_sessions(schedule: pd.DataFrame,
-                        now: datetime) -> list[tuple[int,str,str]]:
-    """
-    Scan the full season schedule and return a list of
-    (year, event_name, session_label) for all *finished* sessions
-    that you should attempt to append.
-    """
-    todo: list[tuple[int,str,str]] = []
-
-    for _, ev in schedule.iterrows():
-        fmt      = str(ev.EventFormat).lower()
-        name     = ev.EventName or ""
-        fp1_utc  = ev.Session1DateUtc
-        year_tag = fp1_utc.year
-
-        #  skip *any* pre-season or in-season testing events - due to their nature
-        if fmt == "testing" or "test" in name.lower():
-            continue
-
-        for ses in _sessions_completed(fmt, fp1_utc, now):
-            todo.append((year_tag, name, ses))
-
-    return todo
-
-#--------------------------------------------------------------------------------------------------------------------------
-# Session loading and metadata
-#--------------------------------------------------------------------------------------------------------------------------
-
-def load_session(year, event_name, session_name):
-    """
-    Load a session using FastF1. Fallback to OpenF1 if FastF1 fails.
-
-    Parameters:
-    - year: int — F1 season year
-    - event_name: str — Grand Prix name
-    - session_name: str — 'FP1', 'FP2', 'Q', 'Race', etc.
-
-    Returns:
-    - dict with keys: source, session, laps, status, reason
-    """
-    try:
-        session = ff1.get_session(year, event_name, session_name)
-        session.load(telemetry=True, laps=True)
-        if session.laps.empty:
-            raise ValueError("FastF1 session loaded but contains no lap data")
-        return {
-            "source": "fastf1",
-            "session": session,
-            "laps": session.laps,
-            "status": "ok",
-            "reason": None
-        }
-    except Exception as e:
-        print(f"⚠️ FastF1 failed for {year} {event_name} {session_name}: {e}")
-
-    # Fallback to OpenF1 API
-    try:
-        print("🔄 Falling back to OpenF1 API...")
-        session_map = {
-            "FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
-            "Q": "Qualifying", "Race": "Race", "SQ": "Sprint Qualifying",
-            "S": "Sprint", "SS": "Sprint Shootout"
-        }
-        api_session_name = session_map.get(session_name, session_name)
-        url = "https://api.openf1.org/v1/lap_times"
-        params = {"year": year, "session": api_session_name}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        laps_df = pd.DataFrame(response.json())
-        if laps_df.empty:
-            raise ValueError("OpenF1 returned an empty dataset")
-        return {
-            "source": "openf1",
-            "session": None,
-            "laps": laps_df,
-            "status": "fallback",
-            "reason": None
-        }
-    except Exception as e:
-        print(f"❌ OpenF1 fallback failed for {year} {event_name} {session_name}: {e}")
-        return {
-            "source": None,
-            "session": None,
-            "laps": None,
-            "status": "error",
-            "reason": str(e)
-        }
-
-# Weather
-
-def get_weather_info(session, year, event_name, session_name):
-    """
-    Try to extract weather data from FastF1 session. Fallback to OpenF1 API if needed.
-
-    Parameters:
-    - session (FastF1.Session or None): Loaded FastF1 session, or None if fallback needed.
-    - year (int): Season year
-    - event_name (str): Event name (e.g., 'Bahrain Grand Prix')
-    - session_name (str): Session label ('FP1', 'Race', etc.)
-
-    Returns:
-    - dict with average air temp, track temp, and boolean rain presence
-    """
-    # --- Try FastF1 session ---
-    if session is not None and hasattr(session, "weather_data") and not session.weather_data.empty:
-        weather = session.weather_data
-        return {
-            "air_temp_avg": weather["AirTemp"].mean(),
-            "track_temp_avg": weather["TrackTemp"].mean(),
-            "rain_detected": weather["Rainfall"].max() > 0
-        }
-
-    # --- Fallback to OpenF1 ---
-    try:
-        session_map = {
-            "FP1": "Practice 1", "FP2": "Practice 2", "FP3": "Practice 3",
-            "Q": "Qualifying", "Race": "Race", "SQ": "Sprint Qualifying",
-            "S": "Sprint", "SS": "Sprint Shootout"
-        }
-        api_session_name = session_map.get(session_name, session_name)
-
-        url = "https://api.openf1.org/v1/weather"
-        params = {"year": year, "session": api_session_name}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = pd.DataFrame(response.json())
-
-        if data.empty:
-            raise ValueError("No weather data from OpenF1")
-
-        return {
-            "air_temp_avg": data["air_temperature"].mean(),
-            "track_temp_avg": data["track_temperature"].mean(),
-            "rain_detected": (data["rainfall"] > 0).any()
-        }
-
-    except Exception as e:
-        print(f"⚠️ Weather fallback failed for {year} {event_name} {session_name}: {e}")
-        return {
-            "air_temp_avg": np.nan,
-            "track_temp_avg": np.nan,
-            "rain_detected": np.nan
-        }
-        
-# Elevation
-
-@lru_cache(maxsize=None)
-def get_elevation(latitude: float, longitude: float,
-                  timeout: int = 10) -> float:
-    """
-    Single-point elevation (Copernicus GLO-90 DEM, 90 m resolution).
-
-    Keeps the original per-point interface but hits Open-Meteo, whose
-    public limit is 600 calls/minute instead of 1 call/second.
-    """
-    url = (
-        "https://api.open-meteo.com/v1/elevation"
-        f"?latitude={latitude}&longitude={longitude}"
-    )
-
-    r = requests.get(url, timeout=timeout)
-    r.raise_for_status()                     # network / HTTP errors → exceptions
-
-    payload = r.json()
-    if "elevation" not in payload or payload["elevation"] is None:
-        raise RuntimeError("Open-Meteo returned no elevation")
-
-    return payload["elevation"][0]           # note: array, not dict
-
-    
-# Circuit metadata
+# ── Circuit lookup helpers ────────────────────────────────────────────────────
+def get_elevation(latitude: float, 
+                  longitude: float,
+                  timeout: int = 10):
+    from .general_utils import get_elevation
+    return get_elevation(latitude, longitude, timeout)
 
 def get_circuits(season):
     """
@@ -319,7 +75,7 @@ def get_circuits(season):
 
 def get_all_circuits(start_year=2020, end_year=2025):
     all_rows = []
-    for year in tqdm(range(start_year, end_year + 1), desc="Processing seasons"):
+    for year in range(start_year, end_year + 1):
         df = get_circuits(year)
         all_rows.append(df)
     
@@ -330,8 +86,8 @@ def get_all_circuits(start_year=2020, end_year=2025):
     
     return deduped
 
-# Telemetry extraction
 
+#  Track feature extraction ─────────────────────────────────────────────────
 def extract_track_metrics(session):
     """
     Extract average speed, top speed, and braking profile from a loaded session.
@@ -415,62 +171,8 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
 
 # DRS
 
-def get_drs_info(session, track_length, event=None, session_name=None):
-    """
-    Estimate DRS info from telemetry (fastest lap).
-
-    Parameters:
-    - session (FastF1.Session): Loaded session
-    - track_length (float): Estimated lap length (m)
-    - event (str): Event name for error reporting (e.g., 'Bahrain Grand Prix')
-    - session_name (str): Session label (e.g., 'FP1', 'Q')
-
-    Returns:
-    - dict: num_drs_zones, drs_total_len_m, drs_pct_of_lap
-    """
-    try:
-        lap = session.laps.pick_fastest()
-        tel = lap.get_car_data().add_distance()
-
-        if 'DRS' not in tel.columns:
-            raise ValueError(f"{event} {session_name} - DRS channel not available in telemetry")
-
-        # Identify rows where DRS is active (1- activated, 8 available)
-        drs_active = tel[tel['DRS'].isin([1, 8])].copy()
-        if drs_active.empty:
-            raise ValueError(f"{event} {session_name} - No DRS usage detected in lap")
-
-        # Tag separate DRS zones (gaps > 100m in distance)
-        drs_active['gap'] = drs_active['Distance'].diff().fillna(0)
-        drs_active['zone_id'] = (drs_active['gap'] > 100).cumsum()
-
-        # Compute total length and count zones
-        zone_lengths = drs_active.groupby('zone_id')['Distance'].agg(['min', 'max'])
-        zone_lengths['length'] = zone_lengths['max'] - zone_lengths['min']
-
-        num_drs_zones = len(zone_lengths)
-        drs_total_len = zone_lengths['length'].sum()
-        drs_pct = drs_total_len / track_length if track_length else np.nan
-
-        return {
-            'num_drs_zones': num_drs_zones,
-            'drs_total_len_m': drs_total_len,
-            'drs_pct_of_lap': drs_pct
-        }
-
-    except Exception as e:
-        print(f"⚠️ {event} {session_name} - Failed to infer DRS zones: {e}")
-        return {
-            'num_drs_zones': 0,
-            'drs_total_len_m': 0,
-            'drs_pct_of_lap': np.nan
-        }
-
-
-#--------------------------------------------------------------------------------------------------------------------------
-# Main profile builders
-#--------------------------------------------------------------------------------------------------------------------------
-
+        
+#  Higher‑level profiling pipelines ─────────────────────────────────────────
 def build_profiles_for_season(
     year: int,
     circuit_metadata: pd.DataFrame,
@@ -547,13 +249,7 @@ def build_profiles_for_season(
                         laps.groupby("driver_number")["lap_distance"].max().max()
                     )
 
-                # 2-c  telemetry-derived metrics
-                drs  = get_drs_info(session, lap_len, ev_name, sess) \
-                       if session is not None else {
-                           "num_drs_zones": np.nan,
-                           "drs_total_len_m": np.nan,
-                           "drs_pct_of_lap": np.nan,
-                       }
+                # 2-c  telemetry-derived metrics - DRS zone to be added later
 
                 tmet = extract_track_metrics(session)           if session else None
                 cmet = get_circuit_corner_profile(session)      if session else None
@@ -582,7 +278,7 @@ def build_profiles_for_season(
                         "real_altitude": alt,
                         "lap_length": lap_len,
                         "telemetry_source": tele_src,
-                        **drs, **tmet, **cmet, **wmet,
+                        **tmet, **cmet, **wmet,
                     }
                 )
 
@@ -619,197 +315,51 @@ def build_circuit_profile_df(
     -------
     df_profiles , df_skipped
     """
+    # 1) metadata
     meta = get_all_circuits(start_year, end_year)
 
-    prof_all, skip_all = [], []
+    # 2) assemble every (year, event_name, session_name) to process
+    tasks: list[tuple[int, str, str]] = []
     for yr in range(start_year, end_year + 1):
-        print(f"📅 Processing {yr} …")
-        df_year, df_skip = build_profiles_for_season(
-            yr,
-            meta,
-            only_specific=only_specific,
+        sched = _official_schedule(yr)
+        past  = sched[sched.Session1DateUtc < datetime.utcnow()]
+        for _, ev in past.iterrows():
+            ev_name = ev.EventName
+            fmt     = str(ev.EventFormat).lower()
+            for sess in _session_list(fmt):
+                col     = _session_date_col(sess)
+                sess_dt = getattr(ev, col, None)
+                if sess_dt and sess_dt <= datetime.utcnow():
+                    # honor only_specific if set
+                    if only_specific is None or (ev_name, sess) in only_specific:
+                        tasks.append((yr, ev_name, sess))
+
+    prof_all, skip_all = [], []
+
+    # 3) single tqdm over *sessions*
+    for yr, ev_name, sess in tqdm(
+        tasks,
+        desc="Sessions", # or desc="Race weekends",
+        unit="session", # or unit="weekend",
+        ncols=80
+    ):
+        # delegate to your per‐season pipeline, but restrict to exactly this one session
+        df_sess, df_skip = build_profiles_for_season(
+            year=yr,
+            circuit_metadata=meta,
+            only_specific={(ev_name, sess)}
         )
-        prof_all.append(df_year)
+        prof_all.append(df_sess)
         skip_all.append(df_skip)
 
-    df_profiles = pd.concat(prof_all,  ignore_index=True)
-    df_skipped  = pd.concat(skip_all, ignore_index=True)
+    # 4) stitch results back together
+    df_profiles = pd.concat(prof_all, ignore_index=True) if prof_all else pd.DataFrame()
+    df_skipped  = pd.concat(skip_all, ignore_index=True) if skip_all else pd.DataFrame()
 
-    print(
-        f"✅ Done: {len(df_profiles)} sessions parsed, "
-        f"{len(df_skipped)} skipped."
-    )
+    print(f"✅ Done: {len(df_profiles)} sessions parsed, {len(df_skipped)} skipped.")
     return df_profiles, df_skipped
 
-#--------------------------------------------------------------------------------------------------------------------------
-# Profile updates
-#--------------------------------------------------------------------------------------------------------------------------
-
-def update_profiles_file(
-    cache_path:  str  = "data/circuit_profiles.csv",
-    start_year:  int  = None,
-    end_year:    int  = None
-):
-    """
-    Append sessions that (a) have already started and (b) are not yet cached.
-    """
-    path = Path(cache_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Cache not found at {cache_path}")
-
-    existing = pd.read_csv(path)
-    existing_keys = {
-        (r.year, r.event, r.session)
-        for r in existing.itertuples()
-    }
-
-    now     = datetime.utcnow()
-    sy      = start_year or now.year
-    ey      = end_year   or sy
-
-    new_chunks = []
-    skipped    = []
-
-    for year in range(sy, ey + 1):
-        sched     = _official_schedule(year)
-        # only events whose FP1 has begun
-        completed = sched[sched.Session1DateUtc < now]
-
-        for _, ev in completed.iterrows():
-            ev_name  = ev.EventName
-            ev_fmt   = ev.EventFormat
-            sess_list = _session_list(ev_fmt)
-
-            for sess in sess_list:
-                # —— NEW: skip any session whose own timestamp is still in the future
-                col = _session_date_col(sess)
-                sess_dt = getattr(ev, col, None)
-                if sess_dt is None or sess_dt > now:
-                    # either missing in the schedule or not yet started
-                    continue
-
-                key = (year, ev_name, sess)
-                if key in existing_keys:
-                    continue
-
-                print(f"📥  appending {key} …")
-                try:
-                    df_ok, df_fail = build_circuit_profile_df(
-                        start_year    = year,
-                        end_year      = year,
-                        only_specific = {(ev_name, sess)}
-                    )
-                    if df_ok.empty:
-                        raise ValueError("no data returned")
-                    new_chunks.append(df_ok)
-                    if not df_fail.empty:
-                        skipped.extend(df_fail.to_dict("records"))
-
-                except Exception as e:
-                    print(f"⚠️ failed to append {key} → {e}")
-                    skipped.append({
-                        "year":    year,
-                        "event":   ev_name,
-                        "session": sess,
-                        "reason":  str(e)
-                    })
-
-    if new_chunks:
-        out = pd.concat([existing, *new_chunks], ignore_index=True)
-        out.to_csv(path, index=False)
-        total = sum(len(df) for df in new_chunks)
-        print(f"✅ added {total} row(s).")
-        return out, (pd.DataFrame(skipped) if skipped else None)
-
-    print("ℹ️ No new sessions to append.")
-    return existing, None
-
-
-def is_update_needed(cache_path: str,
-                     season: int = datetime.utcnow().year) -> bool:
-    """
-    Decide whether the cache CSV needs to be refreshed.
-
-    Logic
-    -----
-    1. If the file does **not** exist  → True
-    2. If *today* lies **inside** an ongoing race-weekend
-       (Session1DateUtc ≤ now ≤ Session1DateUtc + 4 days) → True
-    3. Else, look at the *next* race in the schedule:
-       • return **True** once within *6 h before* FP1
-       • otherwise **False**
-    """
-    # 0. missing cache → definitely rebuild 
-    if not os.path.exists(cache_path):
-        return True
-
-    try:
-        sched = _official_schedule(season)
-        now   = datetime.utcnow()
-
-        # 1. *inside* a race weekend already?
-        weekend_length = timedelta(days=4)          # FP1 .. Race (+buffer)
-        ongoing = sched[
-            (sched.Session1DateUtc <= now)
-            & (sched.Session1DateUtc + weekend_length >= now)
-        ]
-        if not ongoing.empty:
-            return True                             # FP1/FP2/…/Race running
-
-        # 2. otherwise look at the next race
-        upcoming = sched[sched.Session1DateUtc > now]
-        if upcoming.empty:
-            return False                            # season finished
-
-        next_start = upcoming.iloc[0]["Session1DateUtc"]
-        prebuffer  = timedelta(hours=6)             # allow pre-FP1 update
-        return now >= next_start - prebuffer
-
-    except Exception as e:
-        print(f"⚠️  Could not check race schedule: {e}")
-        return True  # safest fallback
-
-
-def load_or_build_profiles(
-    cache_path: str = "data/circuit_profiles.csv",
-    start_year: int  = 2020,
-    end_year:   int  = None
-):
-    """
-    Load cached profiles if still valid; else append new race or rebuild from scratch.
-
-    Parameters
-    ----------
-    cache_path : str
-        Path to cached CSV file.
-    start_year : int
-        First season to include if (re)building.
-    end_year : int | None
-        Last season to include; defaults to start_year if not given.
-    """
-    end_year = end_year or start_year
-
-    # 1) no cache → full rebuild
-    if not os.path.exists(cache_path):
-        print("📂 No cache found. Rebuilding full dataset...")
-        df, skipped = build_circuit_profile_df(start_year, end_year)
-        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-        df.to_csv(cache_path, index=False)
-        return df, skipped
-
-    # 2) cache exists & race weekend started → incremental update
-    if is_update_needed(cache_path, season=datetime.utcnow().year):
-        print("🔁 Race weekend started — updating recent sessions only...")
-        return update_profiles_file(cache_path, start_year, end_year)
-
-    # 3) otherwise just load the file
-    print("✅ Using cached circuit profile file.")
-    return pd.read_csv(cache_path), None
-
-#--------------------------------------------------------------------------------------------------------------------------
-# Track profile clustering
-#--------------------------------------------------------------------------------------------------------------------------
-
+# ── Clustering & viz helpers ─────────────────────────────────────────────────
 def fit_track_clusters(
     df_profiles: pd.DataFrame,
     group_cols: list[str] = ['event','year'],
@@ -869,10 +419,7 @@ def fit_track_clusters(
 
     return track_profile, pipe
 
-#--------------------------------------------------------------------------------------------------------------------------
-# Charts
-#--------------------------------------------------------------------------------------------------------------------------
-
+    
 def plot_cluster_radar(df_profiles: pd.DataFrame, categories: list[str], cluster_col: str = 'cluster', normalize: bool = True):
     """
     Build and display a Plotly radar chart where each cluster's mean feature values
