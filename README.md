@@ -16,10 +16,11 @@ formula1/
 │ ├── circuit_utils.py # Track-level clustering & profiling
 │ ├── driver_utils.py # Telemetry-based driver metrics
 │ ├── general_utils.py # Shared utility functions
-│ ├── predictive_utils.py # Predictive modeling and feature engineering
 │ └── init.py
-├── circuit.ipynb # EDA and clustering for track profiles
-├── wip.ipynb # Working notebook for prototyping
+├── helpers/
+│ ├── circuit.ipynb # EDA and clustering for track profiles
+│ └── wip.ipynb # Working notebook for prototyping
+├── main.py # CLI entry point for extracting and updating data
 ├── LICENSE
 ├── README.md # Project overview and documentation
 └── requirements.txt # Package dependencies
@@ -79,13 +80,13 @@ pip install -r requirements.txt
 ```
 
 ### 3. How to Use
+- python main.py --from 2023 --to 2025
+#### Optional
 - circuit.ipynb: Run track clustering and visualize PCA output.
 
 # 🤝 Acknowledgements
 - FastF1 — telemetry and timing data
-
 - OpenF1 — alternative data source
-
 - The broader F1 data and fan community ❤️
 
 # Contact

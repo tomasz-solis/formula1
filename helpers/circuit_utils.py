@@ -1,22 +1,19 @@
 """
 Utilities focused on circuit geometry & track‑level analytics.
 """
-from __future__ import annotations
 import numpy as np, pandas as pd
 import fastf1 as ff1
 from fastf1.ergast import Ergast
-from pathlib import Path
 from typing import List
 from datetime import datetime
 from tqdm import tqdm
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
 import plotly.graph_objects as go
+from scipy.spatial import cKDTree
 from .general_utils import (_official_schedule, _session_list,
                             _session_date_col, load_session, get_weather_info)
 
@@ -140,33 +137,63 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
         slow_corners, medium_corners, fast_corners, chicanes
       } or None if failed
     """
+    
     try:
+        session.load()
         lap = session.laps.pick_fastest()
-        tel = lap.get_car_data().add_distance()
-        tel['prev_speed'] = tel['Speed'].shift(1)
-        tel['next_speed'] = tel['Speed'].shift(-1)
-        tel['is_corner'] = (tel['Speed'] < tel['prev_speed']) & (tel['Speed'] < tel['next_speed'])
-        corners = tel[tel['is_corner']].copy()
+        pos = lap.get_pos_data().copy()
+        car = lap.get_car_data().add_distance().copy()
+        corners = session.get_circuit_info().corners.copy()
 
+        if pos.empty or car.empty or corners.empty:
+            raise ValueError("Missing required telemetry or circuit data.")
+
+        # Convert Time to seconds
+        pos['Time_s'] = pos['Time'].dt.total_seconds()
+        car['Time_s'] = car['Time'].dt.total_seconds()
+
+        # Nearest merge using merge_asof
+        merged = pd.merge_asof(
+            pos.sort_values("Time_s"),
+            car[["Time_s", "Speed", "Distance"]].sort_values("Time_s"),
+            on="Time_s",
+            direction="nearest"
+        )
+
+        # KD-tree to map corners to nearest telemetry point
+        tree = cKDTree(merged[['X', 'Y']].dropna().values)
+        corner_coords = corners[['X', 'Y']].dropna().values
+        distances, indices = tree.query(corner_coords, k=1)
+
+        matched = merged.iloc[indices].reset_index(drop=True)
+        matched = matched.rename(columns={"Distance": "DriverDistance"})  # avoid conflict
+        corners = corners.reset_index(drop=True)
+        corners = pd.concat([corners, matched[['Speed', 'DriverDistance']]], axis=1)
+
+        # Classify by speed
         corners['corner_type'] = pd.cut(
             corners['Speed'],
-            bins=[0, low_thresh, med_thresh, 400],
-            labels=['slow', 'medium', 'fast']
+            bins=[0, low_thresh, med_thresh, 1000],
+            labels=['slow', 'medium', 'fast'],
+            include_lowest=True
         )
         counts = corners['corner_type'].value_counts().to_dict()
 
-        corners['DistanceFromPrev'] = corners['Distance'].diff().fillna(9999)
+        # Chicane detection (distance between consecutive corners)
+        corners = corners.sort_values(by='DriverDistance')
+        corners['DistanceFromPrev'] = corners['DriverDistance'].diff().fillna(9999)
         chicanes = (corners['DistanceFromPrev'] < 200).sum()
 
         return {
             'slow_corners': counts.get('slow', 0),
             'medium_corners': counts.get('medium', 0),
             'fast_corners': counts.get('fast', 0),
-            'chicanes': chicanes
+            'chicanes': chicanes#,
+            #'corner_details': corners.reset_index(drop=True)
         }
-
+    
     except Exception as e:
-        print(f"⚠️ Corner profile failed: {e}")
+        print(f"⚠️ Failed to compute corner profile: {e}")
         return None
 
 # DRS

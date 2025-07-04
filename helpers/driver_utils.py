@@ -1,13 +1,20 @@
 """
 Per‑driver performance metrics & feature extraction.
 """
-from __future__ import annotations
 import numpy as np, pandas as pd, fastf1 as ff1
 from datetime import datetime
 from typing import Dict, List
 from sklearn.linear_model import LinearRegression
-
+from tqdm import tqdm
 from .general_utils import load_session, _session_list, _official_schedule
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=".*dtype incompatible with datetime64\\[ns\\].*",
+    module="fastf1"
+)
 
 # ── Throttle & tyre degradation ──────────────────────────────────────────────
 def get_driver_max_throttle_ratio(session, 
@@ -326,3 +333,41 @@ def get_all_driver_features(
         df = df.loc[~mask]
 
     return df.reset_index(drop=True)
+
+def _build_driver_profile_df_for_year(year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    from .general_utils import _official_schedule, _session_list, _session_date_col, load_session, _suppress_inner_tqdm
+
+    jobs = []
+    sched = _official_schedule(year)
+    past = sched[sched.Session1DateUtc < datetime.utcnow()]
+
+    for _, ev in past.iterrows():
+        ev_name = ev.EventName
+        fmt = str(ev.EventFormat).lower()
+        for sess in _session_list(fmt):
+            dtcol = _session_date_col(sess)
+            sess_dt = getattr(ev, dtcol, None)
+            if sess_dt and sess_dt <= datetime.utcnow():
+                jobs.append((year, ev_name, sess))
+
+    all_chunks, all_skipped = [], []
+
+    for yr, ev_name, sess in tqdm(jobs, desc=f"Driver sessions {year}", unit="session"):
+        info = load_session(yr, ev_name, sess)
+        if info["status"] != "ok":
+            all_skipped.append({"year": yr, "event": ev_name, "session": sess, "reason": info.get("reason", "load_session failed")})
+            continue
+
+        with _suppress_inner_tqdm():
+            feat_df = get_all_driver_features(info["session"], year=yr, session_name=sess)
+
+        if feat_df is None or feat_df.empty:
+            all_skipped.append({"year": yr, "event": ev_name, "session": sess, "reason": "no features"})
+        else:
+            all_chunks.append(feat_df)
+
+    df = pd.DataFrame() if not all_chunks else pd.concat(all_chunks, ignore_index=True)
+    skipped = pd.DataFrame(all_skipped) if all_skipped else pd.DataFrame()
+
+    return df, skipped
+

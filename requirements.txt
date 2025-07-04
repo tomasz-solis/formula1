@@ -20,6 +20,7 @@ cycler==0.12.1
 debugpy==1.8.14
 decorator==5.2.1
 defusedxml==0.7.1
+duckdb==1.3.1
 exceptiongroup==1.3.0
 executing==2.2.0
 fastf1==3.5.3
@@ -128,4 +129,5 @@ webencodings==0.5.1
 websocket-client==1.8.0
 websockets==13.1
 widgetsnbextension==4.0.14
+yellowbrick==1.5
 zipp==3.23.0
