@@ -411,7 +411,7 @@ def load_or_build_profiles(
     Only updates current season if needed.
     Returns concatenated DataFrame and skipped sessions (if any).
     """
-    from .circuit_utils import build_circuit_profile_df
+    from .circuit_utils import _build_circuit_profile_df
     from .driver_utils import get_all_driver_features,_build_driver_profile_df_for_year
 
     end_year = end_year or start_year
@@ -428,7 +428,7 @@ def load_or_build_profiles(
             print(f"📂 No cache for {year}. Rebuilding...")
 
             if file_type == "circuit":
-                df, skipped = build_circuit_profile_df(year, year)
+                df, skipped = _build_circuit_profile_df(year, year)
             elif file_type == "driver":
                 df, skipped = _build_driver_profile_df_for_year(year)
             else:
@@ -439,7 +439,7 @@ def load_or_build_profiles(
                 skipped.to_csv(f"data/{year}_{file_type}_skipped.csv", index=False)
 
         # 2) If current year → maybe update
-        elif year == current_year and file_type == "circuit" and is_update_needed(cache_path, season=year):
+        elif year == current_year and is_update_needed(cache_path, season=year):
             print(f"🔁 Updating {file_type} profile for {year}...")
             df, skipped = update_profiles_file(cache_path, year, year, file_type)
 

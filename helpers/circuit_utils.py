@@ -322,7 +322,7 @@ def build_profiles_for_season(
     return pd.DataFrame(records), pd.DataFrame(skipped)
 
 
-def build_circuit_profile_df(
+def _build_circuit_profile_df(
     start_year: int = 2020,
     end_year:   int = 2025,
     *,
