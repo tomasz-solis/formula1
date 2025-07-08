@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import fastf1 as ff1
 import plotly.graph_objects as go
+import plotly.express as px
 
 from fastf1.ergast import Ergast
 from typing import List
@@ -23,6 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
 from scipy.spatial import cKDTree
+from typing import List, Tuple, Optional
 
 log = logging.getLogger(__name__)
 
@@ -577,4 +579,68 @@ def plot_cluster_radar(df_profiles: pd.DataFrame, categories: list[str], cluster
         title="Driving Style Radar per Cluster",
         showlegend=True
     )
-    fig.show()
+    return fig
+
+
+def create_pca_for_n_clusters(
+    circuits: pd.DataFrame,
+    clusters: int,
+    feat_cols: List[str],
+) -> Tuple[px.scatter, None]:
+    """Run PCA + clustering and produce PCA scatter and radar charts.
+
+    Args:
+        circuits (pd.DataFrame):
+            DataFrame containing track metrics, with at least the columns in `feat_cols`,
+            plus 'track_id', 'event' and 'year'.
+        clusters (int): Number of KMeans clusters to fit.
+        feat_cols (List[str]): List of numeric feature columns to include in PCA.
+
+    Returns:
+        Tuple[plotly.graph_objects.Figure, None]:
+            - scatter_plot: PCA scatter (PC1 vs. PC2) colored by cluster.
+            - radar_plot: Radar chart comparing clusters on their top-8 spread features.
+    """
+    # 1. Fit PCA + clustering pipeline
+    track_profile, pipeline = fit_track_clusters(
+        circuits,
+        group_cols=['track_id'],
+        feat_cols=feat_cols,
+        do_pca=True,
+        clusterer=KMeans(n_clusters=clusters, random_state=42),
+    )
+
+    # 2. Map cluster assignments back to original circuits df
+    key = track_profile.set_index('track_id')['cluster']
+    circuits['cluster'] = (
+        circuits['event'].astype(str) + '_' + circuits['year'].astype(str)
+    ).map(key)
+
+    # 3. Prepare ordered cluster labels
+    cluster_vals = sorted(track_profile['cluster'].unique(), key=int)
+
+    # 4. PCA scatter plot
+    scatter_plot = px.scatter(
+        track_profile,
+        x='PC1',
+        y='PC2',
+        color='cluster',
+        hover_data=['track_id'],
+        title=f'PCA view for k={clusters}',
+        category_orders={'cluster': cluster_vals},
+    )
+
+    # 5. Identify top-8 most varying features for radar chart
+    stats = track_profile.groupby('cluster')[feat_cols].mean()
+    spreads = (stats.max() - stats.min()).sort_values(ascending=False)
+    top_features = spreads.head(8).index.tolist()
+    
+    # 6. Radar chart
+    radar_plot = plot_cluster_radar(
+        track_profile,
+        categories=top_features,
+        cluster_col='cluster',
+        normalize=True,
+    )
+
+    return scatter_plot, radar_plot

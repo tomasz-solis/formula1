@@ -13,6 +13,9 @@ formula1/
 ├── main.py                  # Entry point for running pipeline
 ├── requirements.txt         # Project dependencies
 ├── README.md                # Project documentation
+├── EDA/                     # Exploratory Jupyter notebooks
+│   ├── general.ipynb        # General exploratory notebook - source of inspiration for future developments
+│   ├── wip.ipynb            # used for testing purposes
 ├── data/                    # Cached and generated data
 │   ├── .fastf1_cache/       # FastF1 session cache
 │   ├── circuits/            # Circuit profile CSVs
@@ -26,19 +29,19 @@ formula1/
 
 ---
 
-## ✅ Current Features
+## Current Features
 
-### 🔍 Exploratory Analysis
+### Exploratory Analysis
 - Telemetry and weather data extraction per session
 - DRS, braking intensity, throttle ratio, tire degradation proxy
 - Session and track-level summaries
 
-### 🧠 Clustering & Profiles
+### Clustering & Profiles
 - Track classification using PCA + KMeans (or other clustering algorithms)
 - Grouping by `track_id`, with customizable feature selection
 - Output profiles for circuit similarity analysis
 
-### 🛠 Modular Utilities
+### Modular Utilities
 - Functions separated into logical modules for reuse and extensibility
 - Clean handling of missing values, scaling, and transformation pipelines
 
@@ -48,8 +51,9 @@ formula1/
 ### Short-Term Goals (In Progress)
 - ✅ Track clustering via circuit profiles
 - ✅ Driver telemetry-based metric extraction
+- ✅ Refactor processing logic into `main.py`
+- ⏳ Adding more info to driver profiles - sector times/mini sector times
 - ⏳ Predictive modeling for Qualifying & Race pace
-- ⏳ Refactor processing logic into `main.py`
 
 ### Medium-Term Goals (Upcoming)
 - 📦 Year-by-year pipeline: incrementally build data as weekends progress
@@ -61,7 +65,7 @@ formula1/
 - 📊 Interactive dashboards for Qualifying, Race pace, and strategy insights
 - 🏁 Real-time updates during Grand Prix weekends
 
-## 📦 Installation
+## Installation
 
 ### 1. Clone the repo
 ```bash
@@ -81,7 +85,7 @@ pip install -r requirements.txt
 #### Optional
 - circuit.ipynb: Run track clustering and visualize PCA output.
 
-# 🤝 Acknowledgements
+# Acknowledgements
 - FastF1 — telemetry and timing data
 - OpenF1 — alternative data source
 - The broader F1 data and fan community ❤️
@@ -94,5 +98,9 @@ Let me know if you'd like help customizing:
 - Streamlit/FastAPI scaffolding for your web app
 - or GitHub Actions for automating the pipeline later
 
-tomasz.solis@gmail.com
+# Connect
+- tomasz.solis@gmail.com
+- [LinkedIn](https://www.linkedin.com/in/tomaszsolis/)
 
+---
+_Last updated: July 8, 2025_
