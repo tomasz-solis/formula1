@@ -6,7 +6,7 @@ Future versions will evolve into a **cloud-deployed application** with automated
 
 ---
 
-## 📌 Project Structure
+## Project Structure
 
 ```
 formula1/
@@ -81,11 +81,23 @@ pip install -r requirements.txt
 ```
 
 ### 3. How to Use
-- python main.py --from 2023 --to 2025
-#### Optional
-- circuit.ipynb: Run track clustering and visualize PCA output.
+
+#### 3.1. Data pipeline
+Data pipeline had been verified for 2022-2025 period (new regulations - so called "Ground Effect Era" ).
+
+```bash
+python main.py --from 2022 --to 2025
+```
+
+#### 3.2. Analytics
+- general.ipynb:
+    - Run track clustering and visualize PCA output
+    - Try to forecast Quali and Race results based on free practices
 
 # Acknowledgements
+
+- [Linkedin - Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) and his work in Formula Data Anaysis (@fdataanalysis on Instagram)
+
 - FastF1 — telemetry and timing data
 - OpenF1 — alternative data source
 - The broader F1 data and fan community ❤️
