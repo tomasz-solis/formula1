@@ -96,7 +96,7 @@ python main.py --from 2022 --to 2025
 
 # Acknowledgements
 
-- [Linkedin - Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) and his work in Formula Data Anaysis (@fdataanalysis on Instagram)
+- [Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) and his work in Formula Data Analysis (@fdataanalysis on Instagram)
 
 - FastF1 — telemetry and timing data
 - OpenF1 — alternative data source
