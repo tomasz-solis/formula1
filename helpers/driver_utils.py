@@ -6,8 +6,10 @@ from datetime import datetime
 from typing import Dict, List
 from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
-from .general_utils import load_session, _session_list, _official_schedule
+#from .general_utils import load_session, _session_list, _official_schedule, get_expected_sessions
 import warnings
+from tqdm import tqdm
+
 
 warnings.filterwarnings(
     "ignore",
@@ -16,7 +18,7 @@ warnings.filterwarnings(
     module="fastf1"
 )
 
-# ── Throttle & tyre degradation ──────────────────────────────────────────────
+# Throttle & tyre degradation
 def get_driver_max_throttle_ratio(session, 
                                   driver, 
                                   max_throttle_threshold: int = 98, 
@@ -187,6 +189,7 @@ def _compute_drs_for_driver(session,
 
 def count_drs_activations(session, year, session_name):
     """
+    Count number of DRS activations per driver and per lap for all drivers in the session.
     Returns a dict: { driver: drs_activation_count }.
     """
     weekend = f"{year} {session.event['EventName']}"
@@ -240,6 +243,7 @@ def _compute_braking_metric(session, driver, braking_drop_kmh: int = 30):
 
 def braking_intensity(session, year, session_name, drop_kmh: int = 30):
     """
+    Identify the breaking intensity per driver.
     Returns a dict: { driver: scalar or {metric_name: value, …} }.
     """
     weekend = f"{year} {session.event['EventName']}"
@@ -334,40 +338,86 @@ def get_all_driver_features(
 
     return df.reset_index(drop=True)
 
-def _build_driver_profile_df_for_year(year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    from .general_utils import _official_schedule, _session_list, _session_date_col, load_session, _suppress_inner_tqdm
 
-    jobs = []
-    sched = _official_schedule(year)
-    past = sched[sched.Session1DateUtc < datetime.utcnow()]
+def _build_driver_profile_df(
+    start_year: int,
+    end_year:   int,
+    *,
+    only_specific: dict[int, set[tuple[str, str]]] | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build driver profiles for a range of seasons.
 
-    for _, ev in past.iterrows():
-        ev_name = ev.EventName
-        fmt = str(ev.EventFormat).lower()
-        for sess in _session_list(fmt):
-            dtcol = _session_date_col(sess)
-            sess_dt = getattr(ev, dtcol, None)
-            if sess_dt and sess_dt <= datetime.utcnow():
-                jobs.append((year, ev_name, sess))
+    Parameters
+    ----------
+    start_year : int
+        First year to include.
+    end_year : int
+        Last year to include (inclusive).
+    only_specific : dict of {year: set of (event,session)}, optional
+        If provided, only those exact sessions will be processed.
 
-    all_chunks, all_skipped = [], []
+    Returns
+    -------
+    df_profiles, df_skipped : (DataFrame, DataFrame)
+    """
+    from .general_utils import _official_schedule, _completed_sessions, load_session
+    from .driver_utils    import get_all_driver_features
 
-    for yr, ev_name, sess in tqdm(jobs, desc=f"Driver sessions {year}", unit="session"):
-        info = load_session(yr, ev_name, sess)
-        if info["status"] != "ok":
-            all_skipped.append({"year": yr, "event": ev_name, "session": sess, "reason": info.get("reason", "load_session failed")})
-            continue
+    all_profiles = []
+    all_skipped  = []
 
-        with _suppress_inner_tqdm():
-            feat_df = get_all_driver_features(info["session"], year=yr, session_name=sess)
+    now = datetime.utcnow()
+    for year in range(start_year, end_year + 1):
+        # 1) Grab only the sessions that have finished (skipping testing)
+        sched = _official_schedule(year)
+        done  = _completed_sessions(sched, now)
 
-        if feat_df is None or feat_df.empty:
-            all_skipped.append({"year": yr, "event": ev_name, "session": sess, "reason": "no features"})
-        else:
-            all_chunks.append(feat_df)
+        # 2) Optionally prune to only_specific[year]
+        if only_specific and year in only_specific:
+            want = only_specific[year]
+            done = [d for d in done if (d[1], d[2]) in want]
 
-    df = pd.DataFrame() if not all_chunks else pd.concat(all_chunks, ignore_index=True)
-    skipped = pd.DataFrame(all_skipped) if all_skipped else pd.DataFrame()
+        # 3) Show the progress bar over those completed sessions
+        print(f"{year} sessions:") 
+        for yr, ev_name, sess_label in tqdm(
+            done,
+            total=len(done),
+            desc=f"{year} sessions",
+            colour="green",
+        ):
+            try:
+                info = load_session(yr, ev_name, sess_label)
+                if info["status"] != "ok":
+                    raise ValueError(info["reason"])
 
-    return df, skipped
+                df = get_all_driver_features(
+                    info["session"],
+                    year=yr,
+                    session_name=sess_label
+                )
+                if df is None or df.empty:
+                    raise ValueError("no driver features returned")
 
+                # tag with date for traceability
+                df["session_date"] = info["session"].date
+                all_profiles.append(df)
+
+            except Exception as e:
+                all_skipped.append({
+                    "year":    yr,
+                    "event":   ev_name,
+                    "session": sess_label,
+                    "reason":  str(e)
+                })
+
+    # 4) Concat results
+    df_profiles = (
+        pd.concat(all_profiles, ignore_index=True)
+        if all_profiles else pd.DataFrame()
+    )
+    df_skipped  = (
+        pd.DataFrame(all_skipped)
+        if all_skipped else pd.DataFrame()
+    )
+    return df_profiles, df_skipped

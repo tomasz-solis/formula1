@@ -1,3 +1,12 @@
+"""
+F1 project helpers package.
+
+Provides:
+  - General utilities
+  - Driver‐specific functions
+  - Circuit‐specific functions
+"""
+
 # Core shared utilities
 from .general_utils import *
 

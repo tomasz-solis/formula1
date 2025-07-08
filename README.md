@@ -10,22 +10,19 @@ Future versions will evolve into a **cloud-deployed application** with automated
 
 ```
 formula1/
-├── data/ # Session and intermediate data (excluded from version control)
-├── f1env/ # Optional: conda/venv environment (excluded from version control)
-├── helpers/ # Core logic modules (utils)
-│ ├── circuit_utils.py # Track-level clustering & profiling
-│ ├── driver_utils.py # Telemetry-based driver metrics
-│ ├── general_utils.py # Shared utility functions
-│ └── init.py
-├── helpers/
-│ ├── circuit.ipynb # EDA and clustering for track profiles
-│ └── wip.ipynb # Working notebook for prototyping
-├── main.py # CLI entry point for extracting and updating data
-├── LICENSE
-├── README.md # Project overview and documentation
-└── requirements.txt # Package dependencies
+├── main.py                  # Entry point for running pipeline
+├── requirements.txt         # Project dependencies
+├── README.md                # Project documentation
+├── data/                    # Cached and generated data
+│   ├── .fastf1_cache/       # FastF1 session cache
+│   ├── circuits/            # Circuit profile CSVs
+│   └── drivers/             # Driver profile CSVs
+└── helpers/                 # Pipeline helper modules
+    ├── __init__.py
+    ├── general_utils.py     # Session loading, caching, schedule helpers
+    ├── driver_utils.py      # Driver performance feature extraction
+    └── circuit_utils.py     # Circuit metadata and analytics
 ```
-
 
 ---
 
@@ -68,8 +65,8 @@ formula1/
 
 ### 1. Clone the repo
 ```bash
-git clone https://github.com/yourusername/f1project.git
-cd f1project/formula1
+git clone https://github.com/tomasz-solis/formula1.git
+cd formula1
 ```
 
 ### 2. Set up virtual environment (optional but recommended)

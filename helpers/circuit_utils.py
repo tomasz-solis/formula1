@@ -1,8 +1,18 @@
 """
-Utilities focused on circuit geometry & track‑level analytics.
+Circuit utilities for geometry and track-level analytics.
+
+Includes functions to fetch circuit list, extract metrics, build profiles, cluster analysis, and plot radar charts.
 """
-import numpy as np, pandas as pd
+
+# Library imports
+
+import logging
+import os
+import numpy as np
+import pandas as pd
 import fastf1 as ff1
+import plotly.graph_objects as go
+
 from fastf1.ergast import Ergast
 from typing import List
 from datetime import datetime
@@ -12,15 +22,25 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
-import plotly.graph_objects as go
 from scipy.spatial import cKDTree
-from .general_utils import (_official_schedule, _session_list,
-                            _session_date_col, load_session, get_weather_info)
 
-# ── Circuit lookup helpers ────────────────────────────────────────────────────
+log = logging.getLogger(__name__)
+
+#  Circuit lookup helpers
 def get_elevation(latitude: float, 
                   longitude: float,
                   timeout: int = 10):
+    """
+    Wrapper around general_utils.get_elevation to fetch elevation data.
+
+    Parameters:
+        latitude (float): GPS latitude.
+        longitude (float): GPS longitude.
+        timeout (int): Request timeout in seconds.
+
+    Returns:
+        float: Elevation in meters.
+    """
     from .general_utils import get_elevation
     return get_elevation(latitude, longitude, timeout)
 
@@ -71,6 +91,15 @@ def get_circuits(season):
 
 
 def get_all_circuits(start_year=2020, end_year=2025):
+    """
+    Aggregate circuit data across multiple seasons.
+
+    Parameters:
+        years (List[int]): List of championship years.
+
+    Returns:
+        pandas.DataFrame: Combined circuits for all years.
+    """
     all_rows = []
     for year in range(start_year, end_year + 1):
         df = get_circuits(year)
@@ -123,6 +152,40 @@ def extract_track_metrics(session):
 
 # Corners
 
+def get_valid_lap_with_pos(session, max_attempts=5):
+    """
+    Try to get a valid lap with position data.
+    
+    Parameters:
+        session: FastF1 session object
+        max_attempts: number of fastest laps to try before giving up
+        
+    Returns:
+        lap (Lap): A single Lap object with valid position data, or None
+    """
+    fast_laps = session.laps.pick_quicklaps().sort_values("LapTime")
+
+    for i, lap in enumerate(fast_laps.itertuples()):
+        if i >= max_attempts:
+            break
+
+        drv = lap.DriverNumber
+        try:
+            _ = session.pos_data[drv]
+            return session.laps.loc[lap.Index]
+        except KeyError:
+            continue
+        except Exception as e:
+            log.warning(f"Skipping lap for driver {drv} → {e}")
+            continue
+
+    event = session.event.get("EventName", "Unknown Event")
+    name  = getattr(session, "name", "Unknown Session")
+    log.warning(f"⚠️ No valid lap with position data in {event} {name}")
+    return None
+
+
+
 def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
     """
     Detect corners and categorize them by entry speed using local speed minima.
@@ -140,7 +203,12 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
     
     try:
         session.load()
-        lap = session.laps.pick_fastest()
+        lap = get_valid_lap_with_pos(session)
+        if lap is None:
+            event = session.event.get("EventName", "Unknown")
+            name = getattr(session, "name", "Unknown")
+            log.warning(f"⚠️ Skipping {event} {name}: No valid lap with pos data")
+            raise RuntimeError("No valid lap with position data")
         pos = lap.get_pos_data().copy()
         car = lap.get_car_data().add_distance().copy()
         corners = session.get_circuit_info().corners.copy()
@@ -192,9 +260,12 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
             #'corner_details': corners.reset_index(drop=True)
         }
     
+        
     except Exception as e:
-        print(f"⚠️ Failed to compute corner profile: {e}")
-        return None
+        event = session.event.get("EventName", "Unknown")
+        name = getattr(session, "name", "Unknown")
+        raise ValueError(f"Failed to compute corner profile: {event} {name} – {e}")
+
 
 # DRS
 
@@ -223,11 +294,14 @@ def build_profiles_for_season(
     -------
     df_profiles, df_skipped : DataFrame, DataFrame
     """
+    #print(f"[TRACE] Filtering to only_specific = {only_specific}")
+
     records: list[dict] = []
     skipped: list[dict] = []
 
     # 1 ─ get schedule
     try:
+        from .general_utils import _official_schedule
         sched = _official_schedule(year)
         past  = sched[sched.Session1DateUtc < datetime.utcnow()]
     except Exception as e:
@@ -237,14 +311,18 @@ def build_profiles_for_season(
         return pd.DataFrame(), pd.DataFrame(skipped)
 
     # 2 ─ iterate events/sessions
-    for _, ev in past.iterrows():
-        ev_name = ev.EventName
-        loc     = ev.Location
-        fmt     = str(ev.EventFormat).lower()
+    from .general_utils import _session_list, _session_date_col, load_session, get_weather_info
+    for _, ev in tqdm(past.iterrows(), total=len(past), desc=f"{year} events", leave=True,colour="blue"):
+        ev_name = ev["EventName"]
+        raw_fmt = ev["EventFormat"]
+        location = ev["Location"] 
+        fmt = str(raw_fmt.item() if isinstance(raw_fmt, pd.Series) else raw_fmt)
+        fmt = fmt.lower() if pd.notnull(fmt) else "conventional"
+        date_map = _session_date_col(fmt, ev)
 
         sessions = _session_list(fmt)
 
-        for sess in sessions:
+        for sess in tqdm(sessions, desc=f"{year} {ev_name}", leave=False, colour="black"):
             if only_specific and (ev_name, sess) not in only_specific:
                 continue                      # not requested → skip
 
@@ -278,9 +356,20 @@ def build_profiles_for_season(
 
                 # 2-c  telemetry-derived metrics - DRS zone to be added later
 
-                tmet = extract_track_metrics(session)           if session else None
-                cmet = get_circuit_corner_profile(session)      if session else None
-                wmet = get_weather_info(session, year, ev_name, sess)
+                try:
+                    tmet = extract_track_metrics(session) if session else None
+                except Exception as e:
+                    raise ValueError(f"Failed to extract telemetry metrics: {e}")
+                
+                try:
+                    cmet = get_circuit_corner_profile(session) if session else None
+                except Exception as e:
+                    raise ValueError(f"{e}")  # already descriptive
+                
+                try:
+                    wmet = get_weather_info(session, year, ev_name, sess)
+                except Exception as e:
+                    raise ValueError(f"Failed to fetch weather data: {e}")
 
                 if not tmet:
                     raise ValueError("Missing telemetry metrics")
@@ -289,7 +378,7 @@ def build_profiles_for_season(
                 try:
                     alt = (
                         circuit_metadata
-                        .loc[circuit_metadata["location"] == loc, "altitude"]
+                        .loc[circuit_metadata["location"] == location, "altitude"]
                         .iloc[0]
                     )
                 except IndexError:
@@ -300,7 +389,7 @@ def build_profiles_for_season(
                     {
                         "year": year,
                         "event": ev_name,
-                        "location": loc,
+                        "location": location,
                         "session": sess,
                         "real_altitude": alt,
                         "lap_length": lap_len,
@@ -315,78 +404,73 @@ def build_profiles_for_season(
                         "year": year,
                         "event": ev_name,
                         "session": sess,
-                        "reason": str(e),
+                        "reason": f"{type(e).__name__}: {e}",
                     }
                 )
 
     return pd.DataFrame(records), pd.DataFrame(skipped)
-
+    
 
 def _build_circuit_profile_df(
-    start_year: int = 2020,
-    end_year:   int = 2025,
+    start_year: int,
+    end_year:   int,
     *,
-    only_specific: set[tuple[str, str]] | None = None,
-):
+    only_specific: dict[int, set[tuple[str, str]]] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Build / refresh the circuit-session profile table over multiple seasons.
+    Build circuit profiles for a range of seasons.
 
     Parameters
     ----------
-    start_year , end_year : int
-        Season range (inclusive).
-    only_specific : {(event_name, session_name), …} | None, keyword-only
-        Forwarded to ``build_profiles_for_season``; see its doc-string.
+    start_year : int
+        First year to include (e.g. 2023).
+    end_year : int
+        Last year to include (inclusive).
+    only_specific : dict of {year: set of (event, session)}, optional
+        If provided, only those exact sessions will be profiled.
 
     Returns
     -------
-    df_profiles , df_skipped
+    df_profiles, df_skipped : (DataFrame, DataFrame)
     """
-    # 1) metadata
-    meta = get_all_circuits(start_year, end_year)
+    all_profiles = []
+    all_skipped  = []
 
-    # 2) assemble every (year, event_name, session_name) to process
-    tasks: list[tuple[int, str, str]] = []
-    for yr in range(start_year, end_year + 1):
-        sched = _official_schedule(yr)
-        past  = sched[sched.Session1DateUtc < datetime.utcnow()]
-        for _, ev in past.iterrows():
-            ev_name = ev.EventName
-            fmt     = str(ev.EventFormat).lower()
-            for sess in _session_list(fmt):
-                col     = _session_date_col(sess)
-                sess_dt = getattr(ev, col, None)
-                if sess_dt and sess_dt <= datetime.utcnow():
-                    # honor only_specific if set
-                    if only_specific is None or (ev_name, sess) in only_specific:
-                        tasks.append((yr, ev_name, sess))
+    for year in range(start_year, end_year + 1):
+        tqdm.write(f"\n📅 Building profiles for season {year}...")
 
-    prof_all, skip_all = [], []
+        # 1) load your track metadata
+        circuit_metadata = get_all_circuits(year)
 
-    # 3) single tqdm over *sessions*
-    for yr, ev_name, sess in tqdm(
-        tasks,
-        desc="Sessions", # or desc="Race weekends",
-        unit="session", # or unit="weekend",
-        ncols=80
-    ):
-        # delegate to your per‐season pipeline, but restrict to exactly this one session
-        df_sess, df_skip = build_profiles_for_season(
-            year=yr,
-            circuit_metadata=meta,
-            only_specific={(ev_name, sess)}
-        )
-        prof_all.append(df_sess)
-        skip_all.append(df_skip)
+        # 2) delegate entirely to build_profiles_for_season,
+        #    handing it only_specific[year] (or None) so that it
+        #    itself skips any session not in that set.
+        if only_specific and year in only_specific:
+            df, skipped = build_profiles_for_season(
+                year,
+                circuit_metadata,
+                only_specific=only_specific[year]
+            )
+        else:
+            df, skipped = build_profiles_for_season(year, circuit_metadata)
 
-    # 4) stitch results back together
-    df_profiles = pd.concat(prof_all, ignore_index=True) if prof_all else pd.DataFrame()
-    df_skipped  = pd.concat(skip_all, ignore_index=True) if skip_all else pd.DataFrame()
+        all_profiles.append(df)
+        all_skipped.append(skipped)
 
-    print(f"✅ Done: {len(df_profiles)} sessions parsed, {len(df_skipped)} skipped.")
+    # 3) concatenate
+    df_profiles = pd.concat(all_profiles, ignore_index=True) if all_profiles else pd.DataFrame()
+    df_skipped  = pd.concat(all_skipped,  ignore_index=True) if all_skipped  else pd.DataFrame()
+
+    # 4) log any skips
+    if not df_skipped.empty:
+        tqdm.write("\n⚠️ Skipped sessions:")
+        for _, row in df_skipped.iterrows():
+            tqdm.write(f"⚠️  - {row['year']} {row['event']} {row['session']} – {row['reason']}")
+
     return df_profiles, df_skipped
+    
 
-# ── Clustering & viz helpers ─────────────────────────────────────────────────
+# Clustering & viz helpers
 def fit_track_clusters(
     df_profiles: pd.DataFrame,
     group_cols: list[str] = ['event','year'],
@@ -397,6 +481,7 @@ def fit_track_clusters(
     n_components: int = 2
 ) -> tuple[pd.DataFrame, Pipeline]:
     """
+    Cluster track metrics into driving-style groups.
     Fit clustering (and optional PCA) per track.
     Returns the per-track cluster assignments and the fitted pipeline.
 
