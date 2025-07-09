@@ -18,8 +18,9 @@ formula1/
 │   ├── wip.ipynb            # used for testing purposes
 ├── data/                    # Cached and generated data
 │   ├── .fastf1_cache/       # FastF1 session cache
-│   ├── circuits/            # Circuit profile CSVs
-│   └── drivers/             # Driver profile CSVs
+│   ├── circuit/             # Circuit profile CSVs
+│   ├── driver/              # Driver profile CSVs
+│   └── driver_timing/       # Exact driver telemetry during each fast lap (excluding outlaps/inlaps)
 └── helpers/                 # Pipeline helper modules
     ├── __init__.py
     ├── general_utils.py     # Session loading, caching, schedule helpers
@@ -56,6 +57,8 @@ formula1/
 - ⏳ Predictive modeling for Qualifying & Race pace
 
 ### Medium-Term Goals (Upcoming)
+- ⏳ Unifying logging outputs
+- ⏳ Optimizing `main.py` for long period queries (for example 2022-2025 in 1 run)
 - 📦 Year-by-year pipeline: incrementally build data as weekends progress
 - 🧪 Proper train/test splitting for model evaluation
 - ☁️ Auto-processing pipeline outputting to local or cloud (e.g. S3)
@@ -115,4 +118,4 @@ Let me know if you'd like help customizing:
 - [LinkedIn](https://www.linkedin.com/in/tomaszsolis/)
 
 ---
-_Last updated: July 8, 2025_
+_Last updated: July 9, 2025_

@@ -54,6 +54,15 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None):
     )
     print(f"✅ Driver profiles shape: {df_driver.shape}")
 
+    # Driver timing files
+    print(f"\n⏱️  Processing driver timing profiles...")
+    df_timing, skipped_timing = load_or_build_profiles(
+        file_type="driver_timing",
+        start_year=from_year,
+        end_year=to_year
+    )
+    print(f"✅ Driver timing profiles shape: {df_timing.shape}")
+
     print("\n🎉 Pipeline complete!")
 
 

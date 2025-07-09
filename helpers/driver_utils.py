@@ -1,15 +1,25 @@
 """
 Per‑driver performance metrics & feature extraction.
 """
-import numpy as np, pandas as pd, fastf1 as ff1
-from datetime import datetime
-from typing import Dict, List
-from sklearn.linear_model import LinearRegression
-from tqdm import tqdm
-#from .general_utils import load_session, _session_list, _official_schedule, get_expected_sessions
-import warnings
-from tqdm import tqdm
 
+# Library imports
+
+import numpy as np
+import pandas as pd
+import fastf1 as ff1
+import warnings
+import os
+
+from datetime import datetime
+from typing import Dict, List, Sequence, Tuple, Optional
+from tqdm import tqdm
+from sklearn.linear_model import LinearRegression
+from scipy.spatial import cKDTree
+
+
+# ----------------------------------------------------------------------------
+# Logging configuration
+# ----------------------------------------------------------------------------
 
 warnings.filterwarnings(
     "ignore",
@@ -17,7 +27,9 @@ warnings.filterwarnings(
     message=".*dtype incompatible with datetime64\\[ns\\].*",
     module="fastf1"
 )
-
+# ----------------------------------------------------------------------------
+# Driver Characteristics per session
+# ----------------------------------------------------------------------------
 # Throttle & tyre degradation
 def get_driver_max_throttle_ratio(session, 
                                   driver, 
@@ -145,7 +157,7 @@ def estimate_tire_degradation(session, year, session_name):
             results[drv] = info
     return results
 
-# ── DRS usage ----------------------------------------------------------------
+# DRS usage
 def _compute_drs_for_driver(session,
                           driver: str,
                           return_nan_if_constant: bool = False) -> float:
@@ -205,7 +217,7 @@ def count_drs_activations(session, year, session_name):
 
     return counts
 
-# ── Braking intensity --------------------------------------------------------
+# Braking intensity
 def _compute_braking_metric(session, driver, braking_drop_kmh: int = 30):
     """
     Compute braking intensity (max / mean negative g-force) on the driver's
@@ -261,7 +273,10 @@ def braking_intensity(session, year, session_name, drop_kmh: int = 30):
     return intensities
 
 
-# ── Full session driver features --------------------------------------------
+# ----------------------------------------------------------------------------
+# Main general driver feature wrapper
+# ----------------------------------------------------------------------------
+    
 def get_all_driver_features(
     session,
     year: int | None         = None,
@@ -338,6 +353,9 @@ def get_all_driver_features(
 
     return df.reset_index(drop=True)
 
+# ----------------------------------------------------------------------------
+# Main wrapper
+# ----------------------------------------------------------------------------
 
 def _build_driver_profile_df(
     start_year: int,
@@ -362,7 +380,6 @@ def _build_driver_profile_df(
     df_profiles, df_skipped : (DataFrame, DataFrame)
     """
     from .general_utils import _official_schedule, _completed_sessions, load_session
-    from .driver_utils    import get_all_driver_features
 
     all_profiles = []
     all_skipped  = []
@@ -384,7 +401,7 @@ def _build_driver_profile_df(
             done,
             total=len(done),
             desc=f"{year} sessions",
-            colour="green",
+            colour="magenta",
         ):
             try:
                 info = load_session(yr, ev_name, sess_label)
@@ -421,3 +438,158 @@ def _build_driver_profile_df(
         if all_skipped else pd.DataFrame()
     )
     return df_profiles, df_skipped
+
+
+# ----------------------------------------------------------------------------
+# Driver detailed timing in each session
+# ----------------------------------------------------------------------------
+
+def get_corner_area(session, max_attempts: int = 5) -> dict[int, float]:
+    """
+    Compute apex distances for every corner on the circuit.
+
+    Finds a single valid lap with positional data, merges its X/Y track
+    coordinates with the lap’s distance timeline, and then uses a KD-tree
+    to snap each corner (from circuit info) to its nearest telemetry point.
+
+    Parameters:
+        session: A loaded FastF1 Session object.
+        max_attempts: How many fastest laps to try before giving up.
+
+    Returns:
+        A dict mapping corner_index → apex_distance_m along the lap.
+
+    Raises:
+        RuntimeError: If no lap with valid position data is found.
+    """
+    fast_laps = session.laps.pick_quicklaps().sort_values("LapTime")
+    valid_lap = None
+
+    for i, lap in enumerate(fast_laps.itertuples()):
+        if i >= max_attempts:
+            break
+        try:
+            _ = session.pos_data[lap.DriverNumber]
+            valid_lap = session.laps.loc[lap.Index]
+            break
+        except Exception:
+            continue
+
+    if valid_lap is None:
+        raise RuntimeError("No lap with valid position data found.")
+
+    # Merge position (X,Y) with distance timeline
+    pos = valid_lap.get_pos_data().copy()
+    car = valid_lap.get_car_data().add_distance().copy()
+    pos["t"] = pos["Time"].dt.total_seconds()
+    car["t"] = car["Time"].dt.total_seconds()
+
+    merged = pd.merge_asof(
+        pos[["t", "X", "Y"]].sort_values("t"),
+        car[["t", "Distance"]].sort_values("t"),
+        on="t",
+        direction="nearest"
+    ).dropna(subset=["X", "Y", "Distance"])
+
+    # KD‐tree corners → nearest telemetry sample → Distance
+    tree    = cKDTree(merged[["X", "Y"]].values)
+    corners = (
+        session
+        .get_circuit_info()
+        .corners
+        .dropna(subset=["X", "Y"])
+        .reset_index()
+    )
+    coords  = corners[["X", "Y"]].values
+    _, idxs = tree.query(coords, k=1)
+
+    apex_distances  = merged.iloc[idxs]["Distance"].to_numpy()
+    corner_indices  = corners["index"].to_numpy()
+    return dict(zip(corner_indices, apex_distances))
+
+
+def get_detailed_lap_telemetry(lap, corner_dists: dict[int, float], corner_window: float = 100.0) -> pd.DataFrame:
+    """
+    Tag a single lap’s telemetry with sector and corner numbers,
+    then add driver and lap identifiers.
+
+    Parameters:
+        lap:        A FastF1 Lap object.
+        corner_dists: Mapping corner_index → apex_distance_m.
+        corner_window: ± metres around each apex to mark as “corner”.
+
+    Returns:
+        A DataFrame with columns:
+          DriverNumber, LapNumber, Time, RPM, nGear, Throttle, Brake,
+          DRS, Distance, RelativeDistance, Sector, Corner
+    """
+    tel = lap.get_telemetry().add_distance().add_relative_distance()
+
+    # Sector boundaries
+    t0   = lap["LapStartTime"]
+    t_s1 = t0 + lap["Sector1Time"]
+    t_s2 = t_s1 + lap["Sector2Time"]
+
+    s1d = tel.loc[tel["Time"] <= t_s1, "Distance"].max()
+    s2d = tel.loc[tel["Time"] <= t_s2, "Distance"].max()
+
+    tel["Sector"] = 3
+    tel.loc[tel["Distance"] <= s1d, "Sector"] = 1
+    tel.loc[(tel["Distance"] > s1d) & (tel["Distance"] <= s2d), "Sector"] = 2
+
+    # Corner tagging
+    tel["Corner"] = 0
+    for corner_idx, apex_dist in corner_dists.items():
+        mask = tel["Distance"].between(apex_dist - corner_window, apex_dist + corner_window)
+        tel.loc[mask, "Corner"] = int(corner_idx)
+
+    # Add identifiers
+    tel["DriverNumber"] = lap.DriverNumber
+    tel["LapNumber"]    = lap["LapNumber"]
+
+    return tel[[
+        "DriverNumber", "LapNumber", "Time", "RPM", "nGear",
+        "Throttle", "Brake", "DRS", "Distance", "RelativeDistance",
+        "Sector", "Corner"
+    ]]
+
+
+def _build_detailed_telemetry(session) -> pd.DataFrame:
+    """
+    Build a per-sample telemetry DataFrame for every lap in the session,
+    tagged with sector and corner, and include session metadata.
+
+    Parameters:
+        session: A loaded FastF1 Session.
+
+    Returns:
+        A DataFrame containing every telemetry point for every lap,
+        with columns:
+          Year, EventName, SessionName, Location,
+          DriverNumber, LapNumber, Time, RPM, nGear, Throttle, Brake,
+          DRS, Distance, RelativeDistance, Sector, Corner
+    """
+    # 1) extract corner→distance once
+    corner_dists = get_corner_area(session)
+
+    # 2) tag every lap’s telemetry
+    laps       = session.laps.pick_wo_box()
+    all_frames = []
+    for _, lap in tqdm(
+        laps.iterlaps(),
+        total=len(laps),
+        desc=f"Telemetry for {session.event.get('EventName')} {session.name}",
+        colour="green"
+    ):
+        df_lap = get_detailed_lap_telemetry(lap, corner_dists)
+        # session metadata
+        df_lap = get_detailed_lap_telemetry(lap, corner_dists).assign(
+            Year        = session.event.get("Season"),
+            EventName   = session.event.get("EventName"),
+            SessionName = getattr(session, "name", None),
+            Location    = session.event.get("Location")
+        )
+        all_frames.append(df_lap)
+
+    # 3) concatenate
+    return pd.concat(all_frames, ignore_index=True)

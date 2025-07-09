@@ -115,7 +115,7 @@ def get_all_circuits(start_year=2020, end_year=2025):
     return deduped
 
 
-#  Track feature extraction ─────────────────────────────────────────────────
+#  Track feature extraction 
 def extract_track_metrics(session):
     """
     Extract average speed, top speed, and braking profile from a loaded session.
@@ -272,7 +272,7 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
 # DRS
 
         
-#  Higher‑level profiling pipelines ─────────────────────────────────────────
+#  Higher‑level profiling pipelines
 def build_profiles_for_season(
     year: int,
     circuit_metadata: pd.DataFrame,
@@ -324,9 +324,9 @@ def build_profiles_for_season(
 
         sessions = _session_list(fmt)
 
-        for sess in tqdm(sessions, desc=f"{year} {ev_name}", leave=False, colour="black"):
+        for sess in tqdm(sessions, desc=f"{year} {ev_name}", leave=True, colour="black"):
             if only_specific and (ev_name, sess) not in only_specific:
-                continue                      # not requested → skip
+                continue
 
             try:
                 # 2-a  load data

@@ -447,6 +447,7 @@ def update_profiles_file(
 
     For file_type=="circuit", builds each missing session in single‐session mode.
     For file_type=="driver", fetches the FastF1 session then runs get_all_driver_features.
+    For file_type=="driver_timing", fetches detailed timing for each driver, except out/inlaps.
     """
     path = Path(cache_path)
     if not path.exists():
@@ -483,12 +484,29 @@ def update_profiles_file(
                     )
 
                 elif file_type == "driver":
-                    # 🔧 New: build only this one driver‐profile session
                     from .driver_utils import _build_driver_profile_df
                     df_ok, df_fail = _build_driver_profile_df(
                         year,
                         only_specific={(ev_name, sess)}
                     )
+                    
+                elif file_type == "driver_timing":
+                    from .driver_utils import _build_detailed_telemetry
+
+                    # load the FastF1 session object
+                    info = load_session(yr, ev_name, sess_label)
+                    if info.get("status") != "ok":
+                        raise ValueError(info.get("reason", "failed to load session"))
+                    sess_obj = info["session"]
+
+                    # extract the per-sample telemetry
+                    df_ok   = _build_detailed_telemetry(sess_obj)
+                    df_ok["year"]    = yr
+                    df_ok["event"]   = ev_name
+                    df_ok["session"] = sess_label
+
+                    # no per-lap failures to track here
+                    df_fail = pd.DataFrame()
 
                 else:
                     raise ValueError(f"Unsupported file_type: {file_type!r}")
@@ -570,7 +588,12 @@ def load_or_build_profiles(
     all_skipped = []
 
     for year in range(start_year, end_year + 1):
-        cache_path = f"data/{year}_{file_type}_profiles.csv"
+        cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        #cache_dir = "data/.fastf1_cache"
+        #os.makedirs(cache_dir, exist_ok=True)
+        #ff1.Cache.enable_cache(cache_dir)
+        #os.makedirs(cache_dir, exist_ok=True)
 
         # 1) If no cache → build from scratch
         if not os.path.exists(cache_path):
@@ -595,6 +618,28 @@ def load_or_build_profiles(
                     end_year=  year,
                     only_specific=spec
                 )
+            elif file_type == "driver_timing":
+                from .driver_utils import _build_detailed_telemetry
+
+                # find all completed sessions this year
+                sched     = _official_schedule(year)
+                completed = sched[sched.Session1DateUtc < datetime.utcnow()]
+                todo      = _completed_sessions(completed, datetime.utcnow())
+
+                chunks = []
+                for yr, ev_name, sess_label in todo:
+                    info = load_session(yr, ev_name, sess_label)
+                    if info.get("status") != "ok":
+                        continue
+                    sess_obj = info["session"]
+                    df_tmp = _build_detailed_telemetry(sess_obj)
+                    df_tmp["year"]    = yr
+                    df_tmp["event"]   = ev_name
+                    df_tmp["session"] = sess_label
+                    chunks.append(df_tmp)
+
+                df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                skipped = pd.DataFrame()
             else:
                 raise ValueError(f"Unsupported file_type: {file_type!r}")
 
