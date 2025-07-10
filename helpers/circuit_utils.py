@@ -258,8 +258,7 @@ def get_circuit_corner_profile(session, low_thresh=100, med_thresh=170):
             'slow_corners': counts.get('slow', 0),
             'medium_corners': counts.get('medium', 0),
             'fast_corners': counts.get('fast', 0),
-            'chicanes': chicanes#,
-            #'corner_details': corners.reset_index(drop=True)
+            'chicanes': chicanes
         }
     
         
@@ -334,15 +333,15 @@ def build_profiles_for_season(
                 if s_info["status"] == "error":
                     raise ValueError(s_info["reason"])
 
-                tele_src = s_info["source"]      # fastf1 / openf1
-                laps     = s_info["laps"]
-                session  = s_info["session"]     # FastF1.Session or None
+                tele_src = s_info["source"] # fastf1 / openf1
+                laps = s_info["laps"]
+                session = s_info["session"]  # FastF1.Session or None
 
                 if laps is None or laps.empty:
                     raise ValueError("Lap data missing")
 
                 # 2-b  basic lap length
-                if session is not None:          # FastF1
+                if session is not None: # FastF1
                     try:
                         fast_lap = session.laps.pick_fastest()
                         lap_len  = (
@@ -351,7 +350,7 @@ def build_profiles_for_season(
                         )
                     except Exception:
                         lap_len = np.nan
-                else:                            # OpenF1 fallback
+                else: # OpenF1 fallback
                     lap_len = (
                         laps.groupby("driver_number")["lap_distance"].max().max()
                     )
@@ -445,8 +444,8 @@ def _build_circuit_profile_df(
         circuit_metadata = get_all_circuits(year)
 
         # 2) delegate entirely to build_profiles_for_season,
-        #    handing it only_specific[year] (or None) so that it
-        #    itself skips any session not in that set.
+        # handing it only_specific[year] (or None) so that it
+        # itself skips any session not in that set.
         if only_specific and year in only_specific:
             df, skipped = build_profiles_for_season(
                 year,
@@ -461,7 +460,7 @@ def _build_circuit_profile_df(
 
     # 3) concatenate
     df_profiles = pd.concat(all_profiles, ignore_index=True) if all_profiles else pd.DataFrame()
-    df_skipped  = pd.concat(all_skipped,  ignore_index=True) if all_skipped  else pd.DataFrame()
+    df_skipped = pd.concat(all_skipped,  ignore_index=True) if all_skipped  else pd.DataFrame()
 
     # 4) log any skips
     if not df_skipped.empty:

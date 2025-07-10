@@ -107,6 +107,7 @@ def _official_schedule(year: int) -> pd.DataFrame:
         except Exception as e:
             print(f"⚠️ F1 backend failed: {e}")
             try:
+                # Least informative - missing lots of info from previous ones - expect failures in other places
                 return ff1.get_event_schedule(year, backend="ergast")
             except Exception as e:
                 print(f"❌ Failed to load event schedule for {year} with any backend: {e}")
@@ -123,7 +124,6 @@ def get_expected_sessions(year: int) -> dict:
     Returns:
         List[str]: List of session codes (e.g., ['FP1', 'FP2', 'FP3', 'QUALIFYING', 'RACE']).
     """
-    import fastf1
 
     sched = _official_schedule(year)
     event_sessions = {}
@@ -464,9 +464,9 @@ def update_profiles_file(
     skipped    = []
 
     for year in range(sy, ey + 1):
-        sched     = _official_schedule(year)
+        sched = _official_schedule(year)
         completed = sched[sched.Session1DateUtc < now]
-        todo      = _completed_sessions(completed, now)
+        todo = _completed_sessions(completed, now)
 
         for yr, ev_name, sess_label in todo:
             key = (yr, ev_name, sess_label)
@@ -492,7 +492,7 @@ def update_profiles_file(
                     
                 elif file_type == "driver_timing":
                     import glob
-                    from .driver_utils    import _build_detailed_telemetry
+                    from .driver_utils import _build_detailed_telemetry
     
                     # 1) ensure output dir exists
                     out_dir = os.path.dirname(cache_path)
@@ -505,9 +505,9 @@ def update_profiles_file(
                     }
     
                     # 3) find all completed sessions this year
-                    sched     = _official_schedule(year)
+                    sched = _official_schedule(year)
                     completed = sched[sched.Session1DateUtc < datetime.utcnow()]
-                    todo      = _completed_sessions(completed, datetime.utcnow())
+                    todo = _completed_sessions(completed, datetime.utcnow())
     
                     chunks = []
                     for yr, ev_name, sess_label in todo:
@@ -523,8 +523,8 @@ def update_profiles_file(
                         sess_obj = info["session"]
     
                         df_tmp = _build_detailed_telemetry(sess_obj)
-                        df_tmp["year"]    = yr
-                        df_tmp["event"]   = ev_name
+                        df_tmp["year"] = yr
+                        df_tmp["event"] = ev_name
                         df_tmp["session"] = sess_label
     
                         # write this weekend’s parquet
@@ -535,7 +535,7 @@ def update_profiles_file(
                                           index=False)
                         chunks.append(df_tmp)
     
-                    df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                    df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
                     skipped = pd.DataFrame()
 
                 else:
@@ -548,8 +548,8 @@ def update_profiles_file(
             except Exception as e:
                 print(f"⚠️ failed to append {key} → {e}")
                 skipped.append({
-                    "year":    yr,
-                    "event":   ev_name,
+                    "year": yr,
+                    "event": ev_name,
                     "session": sess_label,
                     "reason":  str(e)
                 })
@@ -583,7 +583,7 @@ def load_or_build_profiles(
     start_year : int
     end_year   : int
     file_type  : str
-        'circuit' or 'driver'
+        'circuit', 'driver', or 'driver_timing'
     gp_name    : str, optional
         If set and file_type=="circuit", only build circuit profiles for that GP.
 
@@ -591,7 +591,98 @@ def load_or_build_profiles(
     -------
     df_profiles, df_skipped : DataFrame, DataFrame
     """
+    # driver_timing logic
+    if file_type == "driver_timing":
+        import glob
+        from .driver_utils import _build_detailed_telemetry
 
+        out_dir = "data/driver_timing"
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 1) already-written keys
+        existing = set()
+        for fn in glob.glob(os.path.join(out_dir, "*.parquet")):
+            base = os.path.splitext(os.path.basename(fn))[0]
+            parts = base.split("_")
+            # parts = [<year>,<round>,<session#>, <Event_word1>,<Event_word2>,...,<SessLabel>]
+            yr = int(parts[0])
+            sess = parts[-1]
+            # reconstruct event name from parts[3] through parts[-2]
+            ev_clean_parts = parts[3:-1]
+            ev_name = " ".join(ev_clean_parts)
+            existing.add((yr, ev_name, sess))
+
+        # 2) which completed sessions still missing?
+        to_build = []
+        for year in range(start_year, (end_year or start_year) + 1):
+            sched = _official_schedule(year)
+            done = sched[sched.Session1DateUtc < datetime.utcnow()]
+            todo = _completed_sessions(done, datetime.utcnow())
+            for key in todo:
+                if key not in existing:
+                    to_build.append(key)
+
+        # 3) build them
+        skipped = []
+        for yr, ev_name, sess_label in to_build:
+            #print(f"📥 Building driver_timing for {yr} {ev_name} {sess_label}")
+            info = load_session(yr, ev_name, sess_label)
+            if info.get("status") != "ok":
+                skipped.append({"year":yr,"event":ev_name,"session":sess_label,
+                                "reason":info.get("reason","load failed")})
+                continue
+
+            try:
+                df_tmp = _build_detailed_telemetry(info["session"])
+                if df_tmp.empty:
+                    skipped.append({"year":yr,"event":ev_name,"session":sess_label,
+                                    "reason":"no valid laps"})
+                    continue
+            except Exception as e:
+                skipped.append({"year":yr,"event":ev_name,"session":sess_label,
+                                "reason":str(e)})
+                continue
+
+            # add identifiers
+            df_tmp["year"] = yr
+            df_tmp["event"] = ev_name
+            df_tmp["session"] = sess_label
+
+            # round number from schedule
+            sched      = _official_schedule(yr)
+            row_df     = sched[sched["EventName"] == ev_name]
+            round_no   = int(row_df.iloc[0]["RoundNumber"]) if not row_df.empty else 0
+
+            # pick session index by EventFormat
+            fmt        = (row_df.iloc[0].get("EventFormat") or "conventional").lower()
+            orders = {
+                "conventional": ["FP1","FP2","FP3","Q","R"],
+                "sprint_shootout": ["FP1","Q","SS","S","R"],
+                "sprint_qualifying": ["FP1","SQ","S","Q","R"],
+                "sprint": ["FP1","Q","FP2","S","R"]
+            }
+            order      = orders.get(fmt, orders["conventional"])
+            session_no = order.index(sess_label) + 1 if sess_label in order else 0
+
+            # — write parquet with <year>_<round>_<session#>_<EventName>_<Session>.parquet
+            cols_to_keep=[
+                "DriverNumber","LapNumber","Time","Speed","RPM","nGear",
+                "Throttle","Brake","DRS","Distance","RelativeDistance",
+                "Sector","Corner","Year","EventName","SessionName","Location"
+            ]
+            ev_clean = ev_name.replace(" ", "_")
+            fn = f"{yr}_{round_no}_{session_no}_{ev_clean}_{sess_label}.parquet"
+            path = os.path.join(out_dir, fn)
+            df_tmp[cols_to_keep].to_parquet(path, engine="pyarrow", compression="snappy", index=False)
+
+        # 4) read & concat all parquets
+        files = glob.glob(os.path.join(out_dir, "*.parquet"))
+        if not files:
+            return pd.DataFrame(), pd.DataFrame(skipped)
+        df_all = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+        return df_all, pd.DataFrame(skipped)
+
+    # circuit / driver logic
     end_year = end_year or start_year
     current_year = datetime.utcnow().year
 
@@ -613,92 +704,43 @@ def load_or_build_profiles(
             codes = [row[c] for c in session_cols if pd.notna(row[c])]
             only_specific[yr] = {(gp_name, code) for code in codes}
 
-    all_data = []
+    all_data    = []
     all_skipped = []
 
     for year in range(start_year, end_year + 1):
-        if file_type == "driver_timing":
-            continue
-        else:
-            cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        # driver_timing is already handled above, so we only get circuit/driver here
+        cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
 
         # 1) If no cache → build from scratch
         if not os.path.exists(cache_path):
             print(f"📂 No cache for {year}. Rebuilding...")
 
             if file_type == "circuit" and only_specific:
-                # only build the sessions in only_specific[year]
                 from .circuit_utils import _build_circuit_profile_df
                 df, skipped = _build_circuit_profile_df(
                     year, year,
                     only_specific={year: only_specific.get(year, set())}
                 )
+
             elif file_type == "circuit":
-                # build every circuit session for this year
                 from .circuit_utils import _build_circuit_profile_df
                 df, skipped = _build_circuit_profile_df(year, year)
+
             elif file_type == "driver":
-                from .driver_utils import _build_driver_profile_df
+                from .driver_utils import get_all_driver_features as _build_driver_profile_df
                 spec = only_specific.get(year) if only_specific else None
                 df, skipped = _build_driver_profile_df(
                     start_year=year,
                     end_year=  year,
                     only_specific=spec
                 )
-            elif file_type == "driver_timing":
-                    import glob
-                    from .driver_utils    import _build_detailed_telemetry
-    
-                    # 1) ensure output dir exists
-                    out_dir = os.path.dirname(cache_path)
-                    os.makedirs(out_dir, exist_ok=True)
-    
-                    # 2) discover which parquets are already on disk
-                    existing_files = {
-                        os.path.basename(p)
-                        for p in glob.glob(os.path.join(out_dir, "*.parquet"))
-                    }
-    
-                    # 3) find all completed sessions this year
-                    sched     = _official_schedule(year)
-                    completed = sched[sched.Session1DateUtc < datetime.utcnow()]
-                    todo      = _completed_sessions(completed, datetime.utcnow())
-    
-                    chunks = []
-                    for yr, ev_name, sess_label in todo:
-                        # build the target filename
-                        fn = f"{yr}_{ev_name.replace(' ', '_')}_{sess_label}.parquet"
-                        if fn in existing_files:
-                            # skip already-written weekends
-                            continue
-    
-                        info = load_session(yr, ev_name, sess_label)
-                        if info.get("status") != "ok":
-                            continue
-                        sess_obj = info["session"]
-    
-                        df_tmp = _build_detailed_telemetry(sess_obj)
-                        df_tmp["year"]    = yr
-                        df_tmp["event"]   = ev_name
-                        df_tmp["session"] = sess_label
-    
-                        # write this weekend’s parquet
-                        path = os.path.join(out_dir, fn)
-                        df_tmp.to_parquet(path,
-                                          engine="pyarrow",
-                                          compression="snappy",
-                                          index=False)
-                        chunks.append(df_tmp)
-    
-                    df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-                    skipped = pd.DataFrame()
+
             else:
                 raise ValueError(f"Unsupported file_type: {file_type!r}")
 
-            # skip it when file_type == "driver_timing"
-            if file_type != "driver_timing":
-                df.to_csv(cache_path, index=False)
+            # only circuit & driver write CSV
+            df.to_csv(cache_path, index=False)
             if not skipped.empty:
                 skipped.to_csv(f"data/{year}_{file_type}_skipped.csv", index=False)
 
@@ -707,25 +749,21 @@ def load_or_build_profiles(
             print(f"🔁 Updating {file_type} profile for {year}...")
             df, skipped = update_profiles_file(cache_path, year, year, file_type)
 
-        # 3) Otherwise just load the cached CSV (skip this for driver_timing)
+        # 3) Otherwise just load the cached CSV
         else:
-            if file_type == "driver_timing":
-                print(f"✅ Skipping CSV load for driver_timing {year}")
-                df      = pd.DataFrame()
-                skipped = pd.DataFrame()
-            else:
-                print(f"✅ Using cached {file_type} profile for {year}")
-                df      = pd.read_csv(cache_path)
-                skipped = pd.DataFrame()
+            print(f"✅ Using cached {file_type} profile for {year}")
+            df      = pd.read_csv(cache_path)
+            skipped = pd.DataFrame()
 
         all_data.append(df)
         if not skipped.empty:
             all_skipped.append(skipped)
 
-    df_all = pd.concat(all_data, ignore_index=True) if all_data else pd.DataFrame()
+    df_all = pd.concat(all_data, ignore_index=True)    if all_data    else pd.DataFrame()
     skipped_all = pd.concat(all_skipped, ignore_index=True) if all_skipped else pd.DataFrame()
 
     return df_all, skipped_all
+
     
 
 def ensure_year_dir(year: int, subdir: str = "data") -> str:

@@ -4,7 +4,7 @@ Per‑driver performance metrics & feature extraction.
 
 # Library imports
 
-# === monkey‐patch fastf1 to disable driver‐ahead and marker‐distance ===
+# monkey‐patch fastf1 to disable driver‐ahead and marker‐distance
 
 import fastf1
 import fastf1.core as f1core
@@ -17,7 +17,7 @@ f1core.Telemetry.calculate_driver_ahead = lambda self, *a, **k: None
 f1core.CircuitInfo.add_marker_distance  = lambda self, *a, **k: None
 
 
-# === end monkey‐patch ===
+# end monkey‐patch
 
 import numpy as np
 import pandas as pd
@@ -193,7 +193,7 @@ def _compute_drs_for_driver(session,
         Rising-edge count of the open-flap bit (bit-2).
     """
     if session is None:
-        return np.nan                                    # no telemetry at all
+        return np.nan # no telemetry at all
 
     lap = session.laps.pick_drivers([driver]).pick_fastest()
     tel = lap.get_car_data()
@@ -315,7 +315,7 @@ def get_all_driver_features(
     # 1) compute the three driver→{…} maps
     degr_map = estimate_tire_degradation(session, year, session_name)
     brake_map = braking_intensity(session, year, session_name, drop_kmh=braking_drop_kmh)
-    drs_map   = count_drs_activations(session, year, session_name)
+    drs_map = count_drs_activations(session, year, session_name)
 
     # 2) now assemble each driver’s row
     records = []
@@ -333,7 +333,7 @@ def get_all_driver_features(
         if drv in degr_map:
             # degr_map[drv] = {'driver':drv, 'compound':…, 'degradation_slope':…}
             info = degr_map[drv]
-            row["compound"]          = info.get("compound") if info else row.get("compound")
+            row["compound"] = info.get("compound") if info else row.get("compound")
             row["degradation_slope"] = info.get("degradation_slope") if info else np.nan
 
         # 4) merge in brake stats
@@ -348,9 +348,9 @@ def get_all_driver_features(
         row["drs_activations"] = drs_map.get(drv, 0)
 
         # 6) tagging
-        row["year"]     = year
-        row["session"]  = session_name
-        row["event"]    = session.event["EventName"]
+        row["year"] = year
+        row["session"] = session_name
+        row["event"] = session.event["EventName"]
         row["location"] = session.event["Location"]
 
         records.append(row)
@@ -436,10 +436,10 @@ def _build_driver_profile_df(
 
             except Exception as e:
                 all_skipped.append({
-                    "year":    yr,
-                    "event":   ev_name,
+                    "year": yr,
+                    "event": ev_name,
                     "session": sess_label,
-                    "reason":  str(e)
+                    "reason": str(e)
                 })
 
     # 4) Concat results
@@ -517,8 +517,8 @@ def get_corner_area(session, max_attempts: int = 5) -> dict[int, float]:
     coords  = corners[["X", "Y"]].values
     _, idxs = tree.query(coords, k=1)
 
-    apex_distances  = merged.iloc[idxs]["Distance"].to_numpy()
-    corner_indices  = corners["index"].to_numpy()
+    apex_distances = merged.iloc[idxs]["Distance"].to_numpy()
+    corner_indices = corners["index"].to_numpy()
     return dict(zip(corner_indices, apex_distances))
 
 
@@ -537,7 +537,7 @@ def get_detailed_lap_telemetry(
       - DriverNumber, LapNumber, Year, EventName, SessionName, Location
 
     Parameters:
-        lap:          A FastF1 Lap object
+        lap: A FastF1 Lap object
         corner_dists: Mapping corner_index → apex_distance_m
         corner_window: ±m around each apex to mark as “corner”
 
@@ -558,7 +558,7 @@ def get_detailed_lap_telemetry(
                 df.drop(columns=[col], inplace=True)
 
     # 3) reset index → bring timestamp/timedelta into “Time”
-    #    index.name may be None, so default to "index"
+    # index.name may be None, so default to "index"
     idx = pos.index.name or "index"
     pos = pos.reset_index().rename(columns={idx: "Time"})
     idx = car.index.name or "index"
@@ -569,7 +569,7 @@ def get_detailed_lap_telemetry(
         return pd.DataFrame()
 
     # 5) coerce to datetime or timedelta
-    #    we don’t actually need datetime, only need to compute t = seconds since start
+    # only need to compute t = seconds since start
     pos["Time"] = pd.to_datetime(pos["Time"])
     car["Time"] = pd.to_datetime(car["Time"])
 
@@ -607,11 +607,11 @@ def get_detailed_lap_telemetry(
 
     # 11) identifiers & session metadata
     merged["DriverNumber"] = lap.DriverNumber
-    merged["LapNumber"]    = lap["LapNumber"]
-    merged["Year"]         = lap.session.date.year
-    merged["EventName"]    = lap.session.event.get("EventName")
-    merged["SessionName"]  = lap.session.name
-    merged["Location"]     = lap.session.event.get("Location")
+    merged["LapNumber"] = lap["LapNumber"]
+    merged["Year"] = lap.session.date.year
+    merged["EventName"] = lap.session.event.get("EventName")
+    merged["SessionName"] = lap.session.name
+    merged["Location"] = lap.session.event.get("Location")
 
     # 12) select & return
     return merged[[
@@ -639,25 +639,30 @@ def _build_detailed_telemetry(session) -> pd.DataFrame:
     """
     # 1) extract corner→distance once
     corner_dists = get_corner_area(session)
-
-    # 2) tag every lap’s telemetry
-    laps       = session.laps.pick_wo_box()
+    # 2) tag every lap’s telemetry - excluding Inlap/Outlap
+    laps_df = session.laps.pick_wo_box()
+    # only keep laps whose DriverNumber is in session.car_data keys
+    valid_drivers = set(session.car_data.keys())
+    laps_df = laps_df[laps_df["DriverNumber"].isin(valid_drivers)]
     all_frames = []
+    n_laps = len(laps_df)
     for _, lap in tqdm(
-        laps.iterlaps(),
-        total=len(laps),
-        desc=f"Telemetry for {session.event.get('EventName')} {session.name}",
+        laps_df.iterlaps(),
+        desc=f"{session.date.year} {session.event['EventName']} {session.name}",
+        total=n_laps,
         colour="green"
     ):
-        df_lap = get_detailed_lap_telemetry(lap, corner_dists)
-        # session metadata
-        df_lap = get_detailed_lap_telemetry(lap, corner_dists).assign(
-            Year        = session.event.get("Season"),
-            EventName   = session.event.get("EventName"),
-            SessionName = getattr(session, "name", None),
-            Location    = session.event.get("Location")
-        )
-        all_frames.append(df_lap)
-
+        try:
+            df_lap = get_detailed_lap_telemetry(lap, corner_dists)
+            if df_lap.empty:
+                continue
+            all_frames.append(df_lap)
+        except Exception as e:
+             print(f"   ⚠️ skipped lap {lap.name} ({lap.DriverNumber}) → {type(e).__name__}: {e!r}")
+             continue
+            
+    if not all_frames:
+        return pd.DataFrame()
+        
     # 3) concatenate
     return pd.concat(all_frames, ignore_index=True)

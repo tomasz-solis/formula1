@@ -20,7 +20,7 @@ formula1/
 │   ├── .fastf1_cache/       # FastF1 session cache
 │   ├── circuit/             # Circuit profile CSVs
 │   ├── driver/              # Driver profile CSVs
-│   └── driver_timing/       # Exact driver telemetry during each fast lap (excluding outlaps/inlaps)
+│   └── driver_timing/       # Exact driver telemetry during each fast lap (excluding outlaps/inlaps) - Parquet files
 └── helpers/                 # Pipeline helper modules
     ├── __init__.py
     ├── general_utils.py     # Session loading, caching, schedule helpers
@@ -47,13 +47,15 @@ formula1/
 - Clean handling of missing values, scaling, and transformation pipelines
 
 
-## 🗺️ Roadmap
+## Roadmap
 
 ### Short-Term Goals (In Progress)
 - ✅ Track clustering via circuit profiles
 - ✅ Driver telemetry-based metric extraction
 - ✅ Refactor processing logic into `main.py`
 - ⏳ Adding more info to driver profiles - sector times/mini sector times
+    - ✅ Data gathering
+    - ⏳ Data split per sectors/minisectors for enhanced prediction quality.
 - ⏳ Predictive modeling for Qualifying & Race pace
 
 ### Medium-Term Goals (Upcoming)
@@ -96,6 +98,8 @@ python main.py --from 2022 --to 2025
 - general.ipynb:
     - Run track clustering and visualize PCA output
     - Try to forecast Quali and Race results based on free practices
+    - circut profiles and driver session profiles saved as csvs
+    - lap telemetry saved as parquet files due to size optimization
 
 # Acknowledgements
 
@@ -118,4 +122,4 @@ Let me know if you'd like help customizing:
 - [LinkedIn](https://www.linkedin.com/in/tomaszsolis/)
 
 ---
-_Last updated: July 9, 2025_
+_Last updated: July 10, 2025_
