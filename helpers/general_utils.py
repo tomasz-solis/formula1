@@ -491,22 +491,52 @@ def update_profiles_file(
                     )
                     
                 elif file_type == "driver_timing":
-                    from .driver_utils import _build_detailed_telemetry
-
-                    # load the FastF1 session object
-                    info = load_session(yr, ev_name, sess_label)
-                    if info.get("status") != "ok":
-                        raise ValueError(info.get("reason", "failed to load session"))
-                    sess_obj = info["session"]
-
-                    # extract the per-sample telemetry
-                    df_ok   = _build_detailed_telemetry(sess_obj)
-                    df_ok["year"]    = yr
-                    df_ok["event"]   = ev_name
-                    df_ok["session"] = sess_label
-
-                    # no per-lap failures to track here
-                    df_fail = pd.DataFrame()
+                    import glob
+                    from .driver_utils    import _build_detailed_telemetry
+    
+                    # 1) ensure output dir exists
+                    out_dir = os.path.dirname(cache_path)
+                    os.makedirs(out_dir, exist_ok=True)
+    
+                    # 2) discover which parquets are already on disk
+                    existing_files = {
+                        os.path.basename(p)
+                        for p in glob.glob(os.path.join(out_dir, "*.parquet"))
+                    }
+    
+                    # 3) find all completed sessions this year
+                    sched     = _official_schedule(year)
+                    completed = sched[sched.Session1DateUtc < datetime.utcnow()]
+                    todo      = _completed_sessions(completed, datetime.utcnow())
+    
+                    chunks = []
+                    for yr, ev_name, sess_label in todo:
+                        # build the target filename
+                        fn = f"{yr}_{ev_name.replace(' ', '_')}_{sess_label}.parquet"
+                        if fn in existing_files:
+                            # skip already-written weekends
+                            continue
+    
+                        info = load_session(yr, ev_name, sess_label)
+                        if info.get("status") != "ok":
+                            continue
+                        sess_obj = info["session"]
+    
+                        df_tmp = _build_detailed_telemetry(sess_obj)
+                        df_tmp["year"]    = yr
+                        df_tmp["event"]   = ev_name
+                        df_tmp["session"] = sess_label
+    
+                        # write this weekend’s parquet
+                        path = os.path.join(out_dir, fn)
+                        df_tmp.to_parquet(path,
+                                          engine="pyarrow",
+                                          compression="snappy",
+                                          index=False)
+                        chunks.append(df_tmp)
+    
+                    df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                    skipped = pd.DataFrame()
 
                 else:
                     raise ValueError(f"Unsupported file_type: {file_type!r}")
@@ -537,7 +567,6 @@ def update_profiles_file(
 
     print("ℹ️ No new sessions to append.")
     return existing, pd.DataFrame(skipped)
-
     
     
 def load_or_build_profiles(
@@ -588,12 +617,11 @@ def load_or_build_profiles(
     all_skipped = []
 
     for year in range(start_year, end_year + 1):
-        cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        #cache_dir = "data/.fastf1_cache"
-        #os.makedirs(cache_dir, exist_ok=True)
-        #ff1.Cache.enable_cache(cache_dir)
-        #os.makedirs(cache_dir, exist_ok=True)
+        if file_type == "driver_timing":
+            continue
+        else:
+            cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
 
         # 1) If no cache → build from scratch
         if not os.path.exists(cache_path):
@@ -619,31 +647,58 @@ def load_or_build_profiles(
                     only_specific=spec
                 )
             elif file_type == "driver_timing":
-                from .driver_utils import _build_detailed_telemetry
-
-                # find all completed sessions this year
-                sched     = _official_schedule(year)
-                completed = sched[sched.Session1DateUtc < datetime.utcnow()]
-                todo      = _completed_sessions(completed, datetime.utcnow())
-
-                chunks = []
-                for yr, ev_name, sess_label in todo:
-                    info = load_session(yr, ev_name, sess_label)
-                    if info.get("status") != "ok":
-                        continue
-                    sess_obj = info["session"]
-                    df_tmp = _build_detailed_telemetry(sess_obj)
-                    df_tmp["year"]    = yr
-                    df_tmp["event"]   = ev_name
-                    df_tmp["session"] = sess_label
-                    chunks.append(df_tmp)
-
-                df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-                skipped = pd.DataFrame()
+                    import glob
+                    from .driver_utils    import _build_detailed_telemetry
+    
+                    # 1) ensure output dir exists
+                    out_dir = os.path.dirname(cache_path)
+                    os.makedirs(out_dir, exist_ok=True)
+    
+                    # 2) discover which parquets are already on disk
+                    existing_files = {
+                        os.path.basename(p)
+                        for p in glob.glob(os.path.join(out_dir, "*.parquet"))
+                    }
+    
+                    # 3) find all completed sessions this year
+                    sched     = _official_schedule(year)
+                    completed = sched[sched.Session1DateUtc < datetime.utcnow()]
+                    todo      = _completed_sessions(completed, datetime.utcnow())
+    
+                    chunks = []
+                    for yr, ev_name, sess_label in todo:
+                        # build the target filename
+                        fn = f"{yr}_{ev_name.replace(' ', '_')}_{sess_label}.parquet"
+                        if fn in existing_files:
+                            # skip already-written weekends
+                            continue
+    
+                        info = load_session(yr, ev_name, sess_label)
+                        if info.get("status") != "ok":
+                            continue
+                        sess_obj = info["session"]
+    
+                        df_tmp = _build_detailed_telemetry(sess_obj)
+                        df_tmp["year"]    = yr
+                        df_tmp["event"]   = ev_name
+                        df_tmp["session"] = sess_label
+    
+                        # write this weekend’s parquet
+                        path = os.path.join(out_dir, fn)
+                        df_tmp.to_parquet(path,
+                                          engine="pyarrow",
+                                          compression="snappy",
+                                          index=False)
+                        chunks.append(df_tmp)
+    
+                    df      = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                    skipped = pd.DataFrame()
             else:
                 raise ValueError(f"Unsupported file_type: {file_type!r}")
 
-            df.to_csv(cache_path, index=False)
+            # skip it when file_type == "driver_timing"
+            if file_type != "driver_timing":
+                df.to_csv(cache_path, index=False)
             if not skipped.empty:
                 skipped.to_csv(f"data/{year}_{file_type}_skipped.csv", index=False)
 
@@ -652,11 +707,16 @@ def load_or_build_profiles(
             print(f"🔁 Updating {file_type} profile for {year}...")
             df, skipped = update_profiles_file(cache_path, year, year, file_type)
 
-        # 3) Otherwise just load the cached CSV
+        # 3) Otherwise just load the cached CSV (skip this for driver_timing)
         else:
-            print(f"✅ Using cached {file_type} profile for {year}")
-            df = pd.read_csv(cache_path)
-            skipped = pd.DataFrame()
+            if file_type == "driver_timing":
+                print(f"✅ Skipping CSV load for driver_timing {year}")
+                df      = pd.DataFrame()
+                skipped = pd.DataFrame()
+            else:
+                print(f"✅ Using cached {file_type} profile for {year}")
+                df      = pd.read_csv(cache_path)
+                skipped = pd.DataFrame()
 
         all_data.append(df)
         if not skipped.empty:

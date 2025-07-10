@@ -4,9 +4,23 @@ Per‑driver performance metrics & feature extraction.
 
 # Library imports
 
+# === monkey‐patch fastf1 to disable driver‐ahead and marker‐distance ===
+
+import fastf1
+import fastf1.core as f1core
+
+# 1) No‐op the driver‐ahead code so lap.get_telemetry() never fails:
+f1core.Telemetry.add_driver_ahead       = lambda self, *a, **k: self
+f1core.Telemetry.calculate_driver_ahead = lambda self, *a, **k: None
+
+# 2) No‐op the marker‐distance code so get_circuit_info() never fails:
+f1core.CircuitInfo.add_marker_distance  = lambda self, *a, **k: None
+
+
+# === end monkey‐patch ===
+
 import numpy as np
 import pandas as pd
-import fastf1 as ff1
 import warnings
 import os
 
@@ -508,50 +522,104 @@ def get_corner_area(session, max_attempts: int = 5) -> dict[int, float]:
     return dict(zip(corner_indices, apex_distances))
 
 
-def get_detailed_lap_telemetry(lap, corner_dists: dict[int, float], corner_window: float = 100.0) -> pd.DataFrame:
+def get_detailed_lap_telemetry(
+    lap,
+    corner_dists: dict[int, float],
+    corner_window: float = 100.0
+) -> pd.DataFrame:
     """
-    Tag a single lap’s telemetry with sector and corner numbers,
-    then add driver and lap identifiers.
+    Build per-sample telemetry from scratch, bypassing FastF1's internals.
+
+    Tags each sample with:
+      - Distance, RelativeDistance
+      - Sector (1,2,3)
+      - Corner (0 if none, else corner index)
+      - DriverNumber, LapNumber, Year, EventName, SessionName, Location
 
     Parameters:
-        lap:        A FastF1 Lap object.
-        corner_dists: Mapping corner_index → apex_distance_m.
-        corner_window: ± metres around each apex to mark as “corner”.
+        lap:          A FastF1 Lap object
+        corner_dists: Mapping corner_index → apex_distance_m
+        corner_window: ±m around each apex to mark as “corner”
 
     Returns:
-        A DataFrame with columns:
-          DriverNumber, LapNumber, Time, RPM, nGear, Throttle, Brake,
-          DRS, Distance, RelativeDistance, Sector, Corner
+        DataFrame with:
+          DriverNumber, LapNumber, Time, Speed, RPM, nGear,
+          Throttle, Brake, DRS, Distance, RelativeDistance,
+          Sector, Corner, Year, EventName, SessionName, Location
     """
-    tel = lap.get_telemetry().add_distance().add_relative_distance()
+    # 1) pull raw pos & car (index holds timestamp or timedelta)
+    pos = lap.get_pos_data().copy()
+    car = lap.get_car_data().copy()
 
-    # Sector boundaries
-    t0   = lap["LapStartTime"]
-    t_s1 = t0 + lap["Sector1Time"]
-    t_s2 = t_s1 + lap["Sector2Time"]
+    # 2) drop any existing time cols
+    for df in (pos, car):
+        for col in ("Time", "SessionTime"):
+            if col in df.columns:
+                df.drop(columns=[col], inplace=True)
 
-    s1d = tel.loc[tel["Time"] <= t_s1, "Distance"].max()
-    s2d = tel.loc[tel["Time"] <= t_s2, "Distance"].max()
+    # 3) reset index → bring timestamp/timedelta into “Time”
+    #    index.name may be None, so default to "index"
+    idx = pos.index.name or "index"
+    pos = pos.reset_index().rename(columns={idx: "Time"})
+    idx = car.index.name or "index"
+    car = car.reset_index().rename(columns={idx: "Time"})
 
-    tel["Sector"] = 3
-    tel.loc[tel["Distance"] <= s1d, "Sector"] = 1
-    tel.loc[(tel["Distance"] > s1d) & (tel["Distance"] <= s2d), "Sector"] = 2
+    # 4) bail if no data or no “Time” column
+    if pos.empty or car.empty or "Time" not in pos or "Time" not in car:
+        return pd.DataFrame()
 
-    # Corner tagging
-    tel["Corner"] = 0
-    for corner_idx, apex_dist in corner_dists.items():
-        mask = tel["Distance"].between(apex_dist - corner_window, apex_dist + corner_window)
-        tel.loc[mask, "Corner"] = int(corner_idx)
+    # 5) coerce to datetime or timedelta
+    #    we don’t actually need datetime, only need to compute t = seconds since start
+    pos["Time"] = pd.to_datetime(pos["Time"])
+    car["Time"] = pd.to_datetime(car["Time"])
 
-    # Add identifiers
-    tel["DriverNumber"] = lap.DriverNumber
-    tel["LapNumber"]    = lap["LapNumber"]
+    # 6) compute elapsed‐seconds since lap start into “t”
+    start = pos["Time"].iloc[0]
+    pos["t"] = (pos["Time"] - start).dt.total_seconds()
+    car["t"] = (car["Time"] - start).dt.total_seconds()
 
-    return tel[[
-        "DriverNumber", "LapNumber", "Time", "RPM", "nGear",
-        "Throttle", "Brake", "DRS", "Distance", "RelativeDistance",
-        "Sector", "Corner"
+    # 7) merge on t, drop rows without Speed
+    merged = pd.merge_asof(
+        pos.sort_values("t"),
+        car[["t","Speed","RPM","nGear","Throttle","Brake","DRS"]].sort_values("t"),
+        on="t", direction="nearest"
+    ).dropna(subset=["Speed"])
+
+    # 8) integrate Speed (km/h) → Distance (m) and compute RelativeDistance
+    dt = merged["t"].diff().fillna(0)
+    merged["Distance"] = (merged["Speed"] * (1000.0/3600.0) * dt).cumsum()
+    total_dist = merged["Distance"].iat[-1] if not merged.empty else 0
+    merged["RelativeDistance"] = merged["Distance"] / total_dist
+
+    # 9) sector tagging using t
+    s1_sec = lap["Sector1Time"].total_seconds()
+    s2_sec = (lap["Sector1Time"] + lap["Sector2Time"]).total_seconds()
+
+    merged["Sector"] = 3
+    merged.loc[merged["t"] <= s1_sec, "Sector"] = 1
+    merged.loc[(merged["t"] > s1_sec) & (merged["t"] <= s2_sec), "Sector"] = 2
+
+    # 10) corner tagging via Distance
+    merged["Corner"] = 0
+    for cn, apex in corner_dists.items():
+        mask = merged["Distance"].between(apex - corner_window, apex + corner_window)
+        merged.loc[mask, "Corner"] = int(cn)
+
+    # 11) identifiers & session metadata
+    merged["DriverNumber"] = lap.DriverNumber
+    merged["LapNumber"]    = lap["LapNumber"]
+    merged["Year"]         = lap.session.date.year
+    merged["EventName"]    = lap.session.event.get("EventName")
+    merged["SessionName"]  = lap.session.name
+    merged["Location"]     = lap.session.event.get("Location")
+
+    # 12) select & return
+    return merged[[
+        "DriverNumber","LapNumber","Time","Speed","RPM","nGear",
+        "Throttle","Brake","DRS","Distance","RelativeDistance",
+        "Sector","Corner","Year","EventName","SessionName","Location"
     ]]
+
 
 
 def _build_detailed_telemetry(session) -> pd.DataFrame:
