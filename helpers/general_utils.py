@@ -5,8 +5,8 @@ Includes session loading, data fetching, caching logic, and batch data processin
 """
 
 # Library imports
-
 import os
+import glob
 import logging
 import functools
 import requests
@@ -15,7 +15,7 @@ import fastf1 as ff1
 import warnings
 
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict
 from contextlib import contextmanager
 from tqdm import tqdm
@@ -24,13 +24,14 @@ from tqdm import tqdm
 # ----------------------------------------------------------------------------
 # Logging configuration
 # ----------------------------------------------------------------------------
+# Suppress noisy FutureWarnings from fastf1
 warnings.filterwarnings(
     "ignore",
     category=FutureWarning,
     message=".*dtype incompatible with datetime64\\[ns\\].*",
     module="fastf1"
 )
-
+# Set logging level to ERROR to minimize output
 logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 
@@ -49,16 +50,17 @@ def _suppress_inner_tqdm():
     try:
         from tqdm import tqdm as tqdm_module
         original = tqdm_module.__init__
+        # Monkey-patch to disable nested bars
         tqdm_module.__init__ = lambda self, *a, **kw: original(self, *a, **{**kw, "disable": True})
         yield
     finally:
+        # Restore original tqdm constructor
         tqdm_module.__init__ = original
 
 # ----------------------------------------------------------------------------
 # Session loading and caching
 # ----------------------------------------------------------------------------
 
-# Session‑mapping helpers
 def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]:
     """
     For a given event format + event row, return mapping:
@@ -77,44 +79,45 @@ def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]
         "R":   "Race",
     }
 
-    mapping = {}
+    mapping: dict[str, str] = {}
+    # Iterate through possible session columns
     for i in range(1, 6):  # Session1 to Session5
         label = event_row.get(f"Session{i}", "")
         for sym, real in symbolic_to_real.items():
             if label == real:
                 mapping[sym] = f"Session{i}DateUtc"
-
     return mapping
-
 
 
 def _official_schedule(year: int) -> pd.DataFrame:
     """
-    Get official F1 schedule (fastf1->f1timing->ergast backend).
+    Get official F1 schedule using multiple backends with fallbacks.
 
     Parameters:
         year (int): Championship year.
 
     Returns:
-        F1 schedule for a given year
+        pd.DataFrame: F1 event schedule for the given year.
     """
     try:
+        # Primary: fastf1 backend
         return ff1.get_event_schedule(year, backend="fastf1")
     except Exception as e:
         print(f"⚠️ fastf1 backend failed: {e}")
         try:
+            # Secondary: f1timing backend
             return ff1.get_event_schedule(year, backend="f1timing")
         except Exception as e:
             print(f"⚠️ F1 backend failed: {e}")
             try:
-                # Least informative - missing lots of info from previous ones - expect failures in other places
+                # Tertiary: ergast backend (less complete)
                 return ff1.get_event_schedule(year, backend="ergast")
             except Exception as e:
-                print(f"❌ Failed to load event schedule for {year} with any backend: {e}")
+                print(f"❌ Failed to load event schedule for {year}: {e}")
                 return pd.DataFrame()
 
 
-def get_expected_sessions(year: int) -> dict:
+def get_expected_sessions(year: int) -> Dict[str, List[str]]:
     """
     Determine which session names to expect for a given season.
 
@@ -122,46 +125,36 @@ def get_expected_sessions(year: int) -> dict:
         year (int): Championship year.
 
     Returns:
-        List[str]: List of session codes (e.g., ['FP1', 'FP2', 'FP3', 'QUALIFYING', 'RACE']).
+        Dict mapping 'YYYY_RR' key to list of real session names.
     """
-
     sched = _official_schedule(year)
-    event_sessions = {}
+    event_sessions: Dict[str, List[str]] = {}
 
     for _, row in sched.iterrows():
         rnd = int(row['RoundNumber'])
         if rnd == 0:
-            continue  # skip testing or invalid events
-
+            # Skip non-championship events (testing)
+            continue
         key = f"{year}_{rnd:02d}"
-        event_format = row.get('EventFormat', '').lower()
-
-        if event_format == 'sprint_shootout':
-            valid_sessions = ["Practice 1", "Qualifying", "Sprint Shootout", "Sprint", "Race"]
-        elif event_format == 'sprint_qualifying':
-            valid_sessions = ["Practice 1", "Sprint Qualifying", "Sprint", "Qualifying", "Race"]
-        elif event_format == 'sprint':
-            valid_sessions = ["Practice 1", "Qualifying", "Practice 2", "Sprint", "Race"]
+        fmt = row.get('EventFormat', '').lower()
+        # Define valid sessions based on event format
+        if fmt == 'sprint_shootout':
+            valid = ["Practice 1", "Qualifying", "Sprint Shootout", "Sprint", "Race"]
+        elif fmt == 'sprint_qualifying':
+            valid = ["Practice 1", "Sprint Qualifying", "Sprint", "Qualifying", "Race"]
+        elif fmt == 'sprint':
+            valid = ["Practice 1", "Qualifying", "Practice 2", "Sprint", "Race"]
         else:
-            valid_sessions = ["Practice 1", "Practice 2", "Practice 3", "Qualifying", "Race"]
-
-        event_sessions[key] = valid_sessions
-
+            valid = ["Practice 1", "Practice 2", "Practice 3", "Qualifying", "Race"]
+        event_sessions[key] = valid
     return event_sessions
 
 
-def _session_list(event_format: str) -> list[str]:
+def _session_list(event_format: str) -> List[str]:
     """
-    Map EventFormat → list of sessions expected to collect.
-
-    conventional          → FP1 FP2 FP3 Q R
-    sprint_shootout       → FP1 Q SS S R
-    sprint_qualifying     → FP1 SQ S Q R
-    sprint                → FP1 Q FP2 S R
-    testing               → []
+    Map EventFormat string to list of session codes for data collection.
     """
     fmt = (event_format or "").lower()
-
     if fmt == "testing":
         return []
     if fmt == "sprint_shootout":
@@ -170,27 +163,23 @@ def _session_list(event_format: str) -> list[str]:
         return ["FP1", "SQ", "S", "Q", "R"]
     if fmt == "sprint":
         return ["FP1", "Q", "FP2", "S", "R"]
-
+    # Default conventional format
     return ["FP1", "FP2", "FP3", "Q", "R"]
 
 
 def _sessions_completed(format_type: str,
                         fp1_utc: datetime,
-                        now: datetime) -> list[str]:
+                        now: datetime) -> List[str]:
     """
-    Given a single weekend’s FP1 UTC start time (possibly tz-aware),
-    return which session labels have already started, working with
-    tz-naive UTC datetimes throughout.
+    Given FP1 UTC start and current time, determine which sessions have started.
     """
-    # 1) Normalize fp1_utc to UTC and then drop tzinfo
-    if fp1_utc.tzinfo is not None:
+    # Normalize tz-aware to naive UTC
+    if fp1_utc.tzinfo:
         fp1_utc = fp1_utc.astimezone(timezone.utc).replace(tzinfo=None)
-    
-    # 2) Ensure `now` is naive UTC
-    if now.tzinfo is not None:
+    if now.tzinfo:
         now = now.astimezone(timezone.utc).replace(tzinfo=None)
-    # if now.tzinfo is already None, assume it's UTC
 
+    # Offsets (hours) for each session relative to FP1
     mapping = {
         "conventional":      [('FP1',  0), ('FP2',  4), ('FP3', 24), ('Q', 28), ('R', 52)],
         "sprint_qualifying": [('FP1',  0), ('SQ',  4), ('S', 28),  ('Q', 28), ('R', 52)],
@@ -198,52 +187,47 @@ def _sessions_completed(format_type: str,
         "sprint":            [('FP1',  0), ('Q',   4), ('FP2',28),  ('S', 28), ('R', 52)],
     }
     key = format_type if format_type in mapping else "conventional"
+    # Return labels whose scheduled time ≤ now
+    return [label for label, offset in mapping[key] if (fp1_utc + timedelta(hours=offset)) <= now]
 
-    return [
-        label
-        for label, offset in mapping[key]
-        if (fp1_utc + timedelta(hours=offset)) <= now
-    ]
 
 def _completed_sessions(schedule: pd.DataFrame,
-                        now: datetime) -> list[tuple[int,str,str]]:
+                        now: datetime) -> List[tuple[int,str,str]]:
     """
-    Scan the full season schedule and return a list of
-    (year, event_name, session_label) for all *finished* sessions
-    that you should attempt to append.
+    Return list of (year, event_name, session_label) for all finished sessions.
     """
-    todo: list[tuple[int,str,str]] = []
-
+    todo: List[tuple[int,str,str]] = []
     for _, ev in schedule.iterrows():
-        fmt      = str(ev.EventFormat).lower()
-        name     = ev.EventName or ""
-        fp1_utc  = ev.Session1DateUtc
+        fmt = str(ev.EventFormat).lower()
+        name = ev.EventName or ""
+        fp1_utc = ev.Session1DateUtc
         year_tag = fp1_utc.year
-
-        #  skip *any* pre-season or in-season testing events - due to their nature
+        
+        # Skip testing events entirely
         if fmt == "testing" or "test" in name.lower():
             continue
-
+            
+        # Add each completed session
         for ses in _sessions_completed(fmt, fp1_utc, now):
             todo.append((year_tag, name, ses))
-
+            
     return todo
 
 # Generic loaders
                     
-def load_session(year, event_name, session_name):
+def load_session(year: int, event_name: str, session_name: str) -> dict:
     """
-    Load a session using FastF1. Fallback to OpenF1 if FastF1 fails.
+    Load a session via FastF1 with fallback to OpenF1 API.
 
-    Parameters:
-    - year: int — F1 season year
-    - event_name: str — Grand Prix name
-    - session_name: str — 'FP1', 'FP2', 'Q', 'Race', etc.
+    Args:
+        year: F1 season year.
+        event_name: Grand Prix name.
+        session_name: Code ('FP1', 'Q', 'Race', etc.).
 
     Returns:
-    - dict with keys: source, session, laps, status, reason
+        dict with keys: source, session, laps, status, reason.
     """
-    # 1) normalize our short codes to FastF1’s full names
+    # Map short codes to FastF1 full names
     session_map = {
         "FP1": "Practice 1",     
         "FP2": "Practice 2",
@@ -256,7 +240,7 @@ def load_session(year, event_name, session_name):
     }
     ff_session_name = session_map.get(session_name, session_name)
 
-    # 2) try FastF1
+    # Try FastF1 first
     try:
         session = ff1.get_session(year, event_name, ff_session_name)
         session.load(telemetry=True, laps=True)
@@ -272,7 +256,7 @@ def load_session(year, event_name, session_name):
     except Exception as e:
         print(f"⚠️ FastF1 failed for {year} {event_name} {session_name}: {e}")
 
-    # 3) fallback to OpenF1
+    # Fallback to OpenF1 API for lap times
     try:
         print("🔄 Falling back to OpenF1 API...")
         api_session_name = session_map.get(session_name, session_name)
@@ -300,20 +284,20 @@ def load_session(year, event_name, session_name):
             "reason": str(e)
         }
 
-def get_weather_info(session, year, event_name, session_name):
+def get_weather_info(session, year: int, event_name: str, session_name: str) -> dict:
     """
     Extract weather information (temperature, humidity, pressure) from a session.
 
-    Parameters:
-    - session (FastF1.Session or None): Loaded FastF1 session, or None if fallback needed.
-    - year (int): Season year
-    - event_name (str): Event name (e.g., 'Bahrain Grand Prix')
-    - session_name (str): Session label ('FP1', 'Race', etc.)
+    Args:
+        session (FastF1.Session or None): Loaded FastF1 session, or None if fallback needed.
+        year (int): Season year
+        event_name (str): Event name (e.g., 'Bahrain Grand Prix')
+        session_name (str): Session label ('FP1', 'Race', etc.)
 
     Returns:
-    - dict with average air temp, track temp, and boolean rain presence
+        dict with average air temp, track temp, and boolean rain presence
     """
-    # --- Try FastF1 session ---
+    # Use FastF1 session if available
     if session is not None and hasattr(session, "weather_data") and not session.weather_data.empty:
         weather = session.weather_data
         return {
@@ -322,20 +306,8 @@ def get_weather_info(session, year, event_name, session_name):
             "rain_detected": weather["Rainfall"].max() > 0
         }
 
-    # --- Fallback to OpenF1 ---
+    # Else fallback to OpenF1 weather endpoint
     try:
-        session_map = {
-            "FP1": "Practice 1", 
-            "FP2": "Practice 2", 
-            "FP3": "Practice 3",
-            "Q": "Qualifying", 
-            "Race": "Race", 
-            "SQ": "Sprint Qualifying",
-            "S": "Sprint", 
-            "SS": "Sprint Shootout"
-        }
-        api_session_name = session_map.get(session_name, session_name)
-
         url = "https://api.openf1.org/v1/weather"
         params = {"year": year, "session": api_session_name}
         response = requests.get(url, params=params)
@@ -360,25 +332,25 @@ def get_weather_info(session, year, event_name, session_name):
         }
 
 @functools.lru_cache(maxsize=None)
-def get_elevation(latitude: float, longitude: float,
-                  timeout: int = 10) -> float:
+def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float:
     """
-    Query external API for ground elevation at a GPS coordinate.
+    Query Open-Meteo API for ground elevation at given coordinates.
 
-    Parameters:
-        lat (float): Latitude in degrees.
-        lon (float): Longitude in degrees.
+    Args:
+        latitude: GPS latitude.
+        longitude: GPS longitude.
+        timeout: Request timeout in seconds.
 
     Returns:
-        float: Elevation in meters.
+        Elevation in meters.
+
+    Raises:
+        RuntimeError: If API returns no elevation.
     """
-    url = (
-        "https://api.open-meteo.com/v1/elevation"
-        f"?latitude={latitude}&longitude={longitude}"
-    )
+    url = f"https://api.open-meteo.com/v1/elevation?latitude={latitude}&longitude={longitude}"
 
     r = requests.get(url, timeout=timeout)
-    r.raise_for_status()                     # network / HTTP errors → exceptions
+    r.raise_for_status()
 
     payload = r.json()
     if "elevation" not in payload or payload["elevation"] is None:
@@ -391,21 +363,19 @@ def get_elevation(latitude: float, longitude: float,
 # ----------------------------------------------------------------------------
 
 # Cache maintenance helpers
-def is_update_needed(cache_path: str,
-                     season: int = datetime.utcnow().year) -> bool:
+def is_update_needed(cache_path: str, season: int = datetime.utcnow().year) -> bool:
     """
     Decide whether the cache CSV needs to be refreshed.
 
     Logic
-    -----
-    1. If the file does **not** exist  → True
-    2. If *today* lies **inside** an ongoing race-weekend
-       (Session1DateUtc ≤ now ≤ Session1DateUtc + 4 days) → True
-    3. Else, look at the *next* race in the schedule:
-       • return **True** once within *6 h before* FP1
-       • otherwise **False**
+        1. If the file does **not** exist  → True
+        2. If *today* lies **inside** an ongoing race-weekend
+           (Session1DateUtc ≤ now ≤ Session1DateUtc + 4 days) → True
+        3. Else, look at the *next* race in the schedule:
+           • return **True** once within *6 h before* FP1
+           • otherwise **False**
     """
-    # 0. missing cache → definitely rebuild 
+    # missing cache → definitely rebuild 
     if not os.path.exists(cache_path):
         return True
 
@@ -413,22 +383,23 @@ def is_update_needed(cache_path: str,
         sched = _official_schedule(season)
         now   = datetime.utcnow()
 
-        # 1. *inside* a race weekend already?
-        weekend_length = timedelta(days=4)          # FP1 .. Race (+buffer)
+        # Check if within a race weekend (FP1 to Race + buffer)
+        weekend_length = timedelta(days=4)
         ongoing = sched[
             (sched.Session1DateUtc <= now)
             & (sched.Session1DateUtc + weekend_length >= now)
         ]
         if not ongoing.empty:
-            return True                             # FP1/FP2/…/Race running
+            return True
 
-        # 2. otherwise look at the next race
+        # Else, next race start -6h threshold
         upcoming = sched[sched.Session1DateUtc > now]
         if upcoming.empty:
-            return False                            # season finished
+            return False
 
         next_start = upcoming.iloc[0]["Session1DateUtc"]
-        prebuffer  = timedelta(hours=6)             # allow pre-FP1 update
+        prebuffer  = timedelta(hours=6)
+        
         return now >= next_start - prebuffer
 
     except Exception as e:
@@ -445,6 +416,8 @@ def update_profiles_file(
     """
     Append sessions that (a) have already started and (b) are not yet cached.
 
+    Supports 'circuit', 'driver', 'driver_timing'.
+
     For file_type=="circuit", builds each missing session in single‐session mode.
     For file_type=="driver", fetches the FastF1 session then runs get_all_driver_features.
     For file_type=="driver_timing", fetches detailed timing for each driver, except out/inlaps.
@@ -453,15 +426,14 @@ def update_profiles_file(
     if not path.exists():
         raise FileNotFoundError(f"Cache not found at {cache_path}")
 
-    existing      = pd.read_csv(path)
+    existing = pd.read_csv(path)
     existing_keys = {(r.year, r.event, r.session) for r in existing.itertuples()}
 
     now = datetime.utcnow()
-    sy  = start_year or now.year
-    ey  = end_year   or sy
+    sy = start_year or now.year
+    ey = end_year or sy
 
-    new_chunks = []
-    skipped    = []
+    new_chunks, skipped = [], []
 
     for year in range(sy, ey + 1):
         sched = _official_schedule(year)
@@ -474,7 +446,11 @@ def update_profiles_file(
                 continue
 
             print(f"📥  appending {key} …")
+            
             try:
+                
+               # Delegate to appropriate builder
+
                 if file_type == "circuit":
                     from .circuit_utils import _build_circuit_profile_df
                     df_ok, df_fail = _build_circuit_profile_df(
@@ -491,23 +467,15 @@ def update_profiles_file(
                     )
                     
                 elif file_type == "driver_timing":
-                    import glob
                     from .driver_utils import _build_detailed_telemetry
     
-                    # 1) ensure output dir exists
                     out_dir = os.path.dirname(cache_path)
                     os.makedirs(out_dir, exist_ok=True)
     
-                    # 2) discover which parquets are already on disk
                     existing_files = {
                         os.path.basename(p)
                         for p in glob.glob(os.path.join(out_dir, "*.parquet"))
                     }
-    
-                    # 3) find all completed sessions this year
-                    sched = _official_schedule(year)
-                    completed = sched[sched.Session1DateUtc < datetime.utcnow()]
-                    todo = _completed_sessions(completed, datetime.utcnow())
     
                     chunks = []
                     for yr, ev_name, sess_label in todo:
@@ -578,110 +546,23 @@ def load_or_build_profiles(
     """
     Loads cached profiles if available, otherwise builds from scratch or updates.
 
-    Parameters
-    ----------
-    start_year : int
-    end_year   : int
-    file_type  : str
-        'circuit', 'driver', or 'driver_timing'
-    gp_name    : str, optional
-        If set and file_type=="circuit", only build circuit profiles for that GP.
+    Args
+        start_year : int
+        end_year   : int
+        file_type  : str
+            'circuit', 'driver', or 'driver_timing'
+        gp_name    : str, optional
+            If set and file_type=="circuit", only build circuit profiles for that GP.
 
     Returns
-    -------
-    df_profiles, df_skipped : DataFrame, DataFrame
+        df_profiles, 
+        df_skipped
     """
     # driver_timing logic
     if file_type == "driver_timing":
-        import glob
-        from .driver_utils import _build_detailed_telemetry
-
-        out_dir = "data/driver_timing"
-        os.makedirs(out_dir, exist_ok=True)
-
-        # 1) already-written keys
-        existing = set()
-        for fn in glob.glob(os.path.join(out_dir, "*.parquet")):
-            base = os.path.splitext(os.path.basename(fn))[0]
-            parts = base.split("_")
-            # parts = [<year>,<round>,<session#>, <Event_word1>,<Event_word2>,...,<SessLabel>]
-            yr = int(parts[0])
-            sess = parts[-1]
-            # reconstruct event name from parts[3] through parts[-2]
-            ev_clean_parts = parts[3:-1]
-            ev_name = " ".join(ev_clean_parts)
-            existing.add((yr, ev_name, sess))
-
-        # 2) which completed sessions still missing?
-        to_build = []
-        for year in range(start_year, (end_year or start_year) + 1):
-            sched = _official_schedule(year)
-            done = sched[sched.Session1DateUtc < datetime.utcnow()]
-            todo = _completed_sessions(done, datetime.utcnow())
-            for key in todo:
-                if key not in existing:
-                    to_build.append(key)
-
-        # 3) build them
-        skipped = []
-        for yr, ev_name, sess_label in to_build:
-            #print(f"📥 Building driver_timing for {yr} {ev_name} {sess_label}")
-            info = load_session(yr, ev_name, sess_label)
-            if info.get("status") != "ok":
-                skipped.append({"year":yr,"event":ev_name,"session":sess_label,
-                                "reason":info.get("reason","load failed")})
-                continue
-
-            try:
-                df_tmp = _build_detailed_telemetry(info["session"])
-                if df_tmp.empty:
-                    skipped.append({"year":yr,"event":ev_name,"session":sess_label,
-                                    "reason":"no valid laps"})
-                    continue
-            except Exception as e:
-                skipped.append({"year":yr,"event":ev_name,"session":sess_label,
-                                "reason":str(e)})
-                continue
-
-            # add identifiers
-            df_tmp["year"] = yr
-            df_tmp["event"] = ev_name
-            df_tmp["session"] = sess_label
-
-            # round number from schedule
-            sched      = _official_schedule(yr)
-            row_df     = sched[sched["EventName"] == ev_name]
-            round_no   = int(row_df.iloc[0]["RoundNumber"]) if not row_df.empty else 0
-
-            # pick session index by EventFormat
-            fmt        = (row_df.iloc[0].get("EventFormat") or "conventional").lower()
-            orders = {
-                "conventional": ["FP1","FP2","FP3","Q","R"],
-                "sprint_shootout": ["FP1","Q","SS","S","R"],
-                "sprint_qualifying": ["FP1","SQ","S","Q","R"],
-                "sprint": ["FP1","Q","FP2","S","R"]
-            }
-            order      = orders.get(fmt, orders["conventional"])
-            session_no = order.index(sess_label) + 1 if sess_label in order else 0
-
-            # — write parquet with <year>_<round>_<session#>_<EventName>_<Session>.parquet
-            cols_to_keep=[
-                "DriverNumber","LapNumber","Time","Speed","RPM","nGear",
-                "Throttle","Brake","DRS","Distance","RelativeDistance",
-                "Sector","Corner","Year","EventName","SessionName","Location"
-            ]
-            ev_clean = ev_name.replace(" ", "_")
-            fn = f"{yr}_{round_no}_{session_no}_{ev_clean}_{sess_label}.parquet"
-            path = os.path.join(out_dir, fn)
-            df_tmp[cols_to_keep].to_parquet(path, engine="pyarrow", compression="snappy", index=False)
-
-        # 4) read & concat all parquets
-        files = glob.glob(os.path.join(out_dir, "*.parquet"))
-        if not files:
-            return pd.DataFrame(), pd.DataFrame(skipped)
-        df_all = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-        return df_all, pd.DataFrame(skipped)
-
+        from .driver_utils import _build_driver_timing_profiles
+        return _build_driver_timing_profiles(start_year, end_year)
+       
     # circuit / driver logic
     end_year = end_year or start_year
     current_year = datetime.utcnow().year
@@ -728,12 +609,10 @@ def load_or_build_profiles(
                 df, skipped = _build_circuit_profile_df(year, year)
 
             elif file_type == "driver":
-                from .driver_utils import get_all_driver_features as _build_driver_profile_df
-                spec = only_specific.get(year) if only_specific else None
+                from .driver_utils import _build_driver_profile_df
                 df, skipped = _build_driver_profile_df(
                     start_year=year,
-                    end_year=  year,
-                    only_specific=spec
+                    end_year=year
                 )
 
             else:
@@ -741,8 +620,12 @@ def load_or_build_profiles(
 
             # only circuit & driver write CSV
             df.to_csv(cache_path, index=False)
-            if not skipped.empty:
-                skipped.to_csv(f"data/{year}_{file_type}_skipped.csv", index=False)
+            if not skipped.empty or skipped.shape[1] != 0:
+                skip_dir = os.path.join("data", "skipped", file_type)
+                os.makedirs(skip_dir, exist_ok=True)
+                
+                skip_path = os.path.join(skip_dir, f"{year}_{file_type}_skipped.csv")
+                skipped.to_csv(skip_path, index=False)
 
         # 2) If it's the current year and needs updating
         elif year == current_year and is_update_needed(cache_path, season=year):
@@ -764,7 +647,6 @@ def load_or_build_profiles(
 
     return df_all, skipped_all
 
-    
 
 def ensure_year_dir(year: int, subdir: str = "data") -> str:
     """
