@@ -11,6 +11,7 @@ import os
 import warnings
 from datetime import datetime, timezone
 from helpers.general_utils import load_or_build_profiles
+from helpers.prediction import export_completed_classifications_csv
 
 # Suppress deprecated dtype warnings when setting LapStartTime
 warnings.filterwarnings(
@@ -68,6 +69,20 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
         end_year=to_year
     )
     print(f"✅ Driver timing profiles shape: {df_timing.shape}")
+
+    # 4) Export available classifications if session results are ready
+    print("\n📤 Exporting available classifications...")
+
+    res = export_completed_classifications_csv(
+        season=to_year,
+        include_sprint=True,   # set False if to skip sprints
+        overwrite=False        # set True to regenerate the CSVs
+    )
+
+    for sess_type, r in res.items():
+        where = f" ({r.written_path})" if r.written_path else ""
+        print(f"  {sess_type:18s} → {r.status}{where if where else ''}")
+
 
     print("\n🎉 Pipeline complete!")
 

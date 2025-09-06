@@ -458,15 +458,16 @@ def update_profiles_file(
                     from .circuit_utils import _build_circuit_profile_df
                     df_ok, df_fail = _build_circuit_profile_df(
                         start_year=yr,
-                        end_year=  yr,
+                        end_year=yr,
                         only_specific={yr: {(ev_name, sess_label)}}
                     )
 
                 elif file_type == "driver":
                     from .driver_utils import _build_driver_profile_df
                     df_ok, df_fail = _build_driver_profile_df(
-                        year,
-                        only_specific={(ev_name, sess)}
+                        start_year=yr,
+                        end_year=yr,
+                        only_specific={(ev_name, sess_label)}
                     )
                     
                 elif file_type == "driver_timing":

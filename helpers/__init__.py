@@ -15,3 +15,6 @@ from .driver_utils import *
 
 # Circuit‐specific API
 from .circuit_utils import *
+
+# Circuit‐specific API
+from .prediction import *
