@@ -9,7 +9,7 @@ import argparse
 import fastf1 as ff1
 import os
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from helpers.general_utils import load_or_build_profiles
 
 # Suppress deprecated dtype warnings when setting LapStartTime
@@ -78,12 +78,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--from", dest="from_year", type=int,
-        default=datetime.utcnow().year,
+        default=datetime.now(timezone.utc).year,
         help="Start year (inclusive)."
     )
     parser.add_argument(
         "--to", dest="to_year", type=int,
-        default=datetime.utcnow().year,
+        default=datetime.now(timezone.utc).year,
         help="End year (inclusive)."
     )
     parser.add_argument(

@@ -15,7 +15,7 @@ import plotly.express as px
 
 from fastf1.ergast import Ergast
 from typing import List, Tuple, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from tqdm import tqdm
 from sklearn.cluster import KMeans
 from sklearn.pipeline import Pipeline
@@ -273,7 +273,7 @@ def build_profiles_for_season(
     try:
         from .general_utils import _official_schedule, _session_list, _session_date_col, load_session, get_weather_info
         sched = _official_schedule(year)
-        past  = sched[sched.Session1DateUtc < datetime.utcnow()]
+        past  = sched[sched.Session1DateUtc < datetime.now(timezone.utc)]
     except Exception as e:
         skipped.append(
             {"year": year, "event": None, "session": None, "reason": str(e)}

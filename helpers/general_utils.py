@@ -100,21 +100,24 @@ def _official_schedule(year: int) -> pd.DataFrame:
         pd.DataFrame: F1 event schedule for the given year.
     """
     try:
-        # Primary: fastf1 backend
-        return ff1.get_event_schedule(year, backend="fastf1")
+        sched = ff1.get_event_schedule(year, backend="fastf1")
+        sched['Session1DateUtc'] = pd.to_datetime(sched['Session1DateUtc'], utc=True)
+        return sched
     except Exception as e:
         print(f"⚠️ fastf1 backend failed: {e}")
         try:
-            # Secondary: f1timing backend
-            return ff1.get_event_schedule(year, backend="f1timing")
+            sched = ff1.get_event_schedule(year, backend="f1timing")
+            sched['Session1DateUtc'] = pd.to_datetime(sched['Session1DateUtc'], utc=True)
+            return sched
         except Exception as e:
-            print(f"⚠️ F1 backend failed: {e}")
+            print(f"⚠️ f1timing backend failed: {e}")
             try:
-                # Tertiary: ergast backend (less complete)
-                return ff1.get_event_schedule(year, backend="ergast")
+                sched = ff1.get_event_schedule(year, backend="ergast")
+                sched['Session1DateUtc'] = pd.to_datetime(sched['Session1DateUtc'], utc=True)
+                return sched
             except Exception as e:
                 print(f"❌ Failed to load event schedule for {year}: {e}")
-                return pd.DataFrame()
+                return None
 
 
 def get_expected_sessions(year: int) -> Dict[str, List[str]]:
@@ -363,7 +366,7 @@ def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float
 # ----------------------------------------------------------------------------
 
 # Cache maintenance helpers
-def is_update_needed(cache_path: str, season: int = datetime.utcnow().year) -> bool:
+def is_update_needed(cache_path: str, season: int = datetime.now(timezone.utc).year) -> bool:
     """
     Decide whether the cache CSV needs to be refreshed.
 
@@ -381,7 +384,7 @@ def is_update_needed(cache_path: str, season: int = datetime.utcnow().year) -> b
 
     try:
         sched = _official_schedule(season)
-        now   = datetime.utcnow()
+        now   = datetime.now(timezone.utc)
 
         # Check if within a race weekend (FP1 to Race + buffer)
         weekend_length = timedelta(days=4)
@@ -429,7 +432,7 @@ def update_profiles_file(
     existing = pd.read_csv(path)
     existing_keys = {(r.year, r.event, r.session) for r in existing.itertuples()}
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     sy = start_year or now.year
     ey = end_year or sy
 
@@ -533,7 +536,7 @@ def update_profiles_file(
         print(f"✅ added {total} row(s).")
         return updated, pd.DataFrame(skipped)
 
-    print("ℹ️ No new sessions to append.")
+    print("ℹ️  No new sessions to append.")
     return existing, pd.DataFrame(skipped)
     
     
@@ -565,7 +568,7 @@ def load_or_build_profiles(
        
     # circuit / driver logic
     end_year = end_year or start_year
-    current_year = datetime.utcnow().year
+    current_year = datetime.now(timezone.utc).year
 
     # Precompute only_specific mapping once, not inside the per-year loop
     only_specific: dict[int, set[tuple[str,str]]] | None = None

@@ -12,7 +12,7 @@ import warnings
 import os
 import glob
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Sequence, Tuple, Optional
 from tqdm import tqdm
 from sklearn.linear_model import LinearRegression
@@ -447,7 +447,7 @@ def _build_driver_profile_df(
     """
 
     all_profiles, all_skipped = [], []
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     for year in range(start_year, end_year + 1):
         sched = _official_schedule(year)
@@ -793,8 +793,8 @@ def _build_driver_timing_profiles(
     # Determine which completed sessions are still missing files
     for year in range(start_year, end_year + 1):
         sched = _official_schedule(year)
-        done = sched[sched.Session1DateUtc < datetime.utcnow()]
-        for key in _completed_sessions(done, datetime.utcnow()):
+        done = sched[sched.Session1DateUtc < datetime.now(timezone.utc)]
+        for key in _completed_sessions(done, datetime.now(timezone.utc)):
             if key not in existing:
                 to_build.append(key)
 
