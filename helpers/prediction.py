@@ -1,25 +1,25 @@
 """
-Prediction helper functions - V1
+Prediction helper functions – V2 (append-only with existing-weekend checks)
 
-Exports clean SSOT-style classification CSVs for sessions that have already happened,
-with one CSV per session type (Qualifying, Race, Sprint Qualifying/Shootout, Sprint).
+Exports SSOT-style classification CSVs for sessions that have already happened,
+**appending only missing weekends** to per-session CSVs (no re-adding past events).
 
 Output folder:
     data/predictions/ssot/
 
-Output files (written only if data exists up to the cutoff time):
+Output files (maintained per season):
     {season}_qualifying.csv
     {season}_race.csv
     {season}_sprint_qualifying.csv
     {season}_sprint.csv
 
 Notes:
-    - Session inclusion is driven by the official schedule and the same
+    * Session inclusion is driven by the official schedule and the same
       "completed/has started by now" logic used elsewhere:
       `_official_schedule(...)` + `_sessions_completed(...)`.
-    - Each file contains all completed events for the specified `season` for that session type.
-    - Results are gated by FastF1 availability: a session is written only if `sess.results` is present.
-    - Safe to call repeatedly: by default, does not overwrite existing CSVs unless `overwrite=True`.
+    * Each file contains all completed events for the specified `season` for that session type.
+    * A session is included only if `sess.results` is present and non-empty.
+    * Idempotent: re-running after a weekend will append only the new weekend’s rows.
 """
 
 from __future__ import annotations
@@ -28,12 +28,16 @@ import logging
 import warnings
 from dataclasses import dataclass
 from pathlib import Path as _Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set, Tuple
+from collections.abc import Iterable
 
 import pandas as _pd
 
 from .general_utils import _official_schedule, _sessions_completed
 
+# -----------------------------------------------------------------------------
+# Logging / warnings
+# -----------------------------------------------------------------------------
 warnings.filterwarnings(
     "ignore",
     category=FutureWarning,
@@ -44,18 +48,22 @@ logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 _logger = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
 SSOT_DIR = "data/predictions/ssot"
 
-# FastF1 canonical names -> filename stems
+# FastF1 canonical names → filename stems
 SESSION_TO_STEM = {
     "Sprint Qualifying": "sprint_qualifying",
-    "Sprint Shootout":   "sprint_qualifying",
+    "Sprint Shootout":   "sprint_qualifying",  # legacy alias
     "Sprint":            "sprint",
     "Qualifying":        "qualifying",
     "Race":              "race",
 }
 
-# Schedule helper labels -> FastF1 canonical names
+
+# Schedule helper labels → canonical FastF1 names
 LABEL_TO_SESSION_NAME = {
     "Q":  "Qualifying",
     "R":  "Race",
@@ -64,24 +72,44 @@ LABEL_TO_SESSION_NAME = {
     "SS": "Sprint Shootout",
 }
 
+# Stable subset (we preserve extra columns after these)
 DEFAULT_KEEP_COLS = [
+    # meta
     "WeekendId", "Season", "RoundNumber", "EventName", "SessionName", "SessionStart",
+    # driver/team
     "DriverNumber", "Abbreviation", "DriverId", "BroadcastName", "TeamName",
+    # classification
     "GridPosition", "ClassifiedPosition", "Status",
+    # quali timing (when present)
     "Q1", "Q2", "Q3",
+    # bests (when present)
     "BestLapTime", "BestLapSpeed",
 ]
 
+# Per-session CSV identity key (per file we store only one session type)
+DEDUP_KEYS = ["WeekendId", "DriverNumber"]
 
+# Treat "Sprint Shootout" as the same bucket/file as "Sprint Qualifying"
+BUCKET_ALIAS = {
+    "Sprint Shootout": "Sprint Qualifying",
+}
+
+def _bucket_session_name(name: str) -> str:
+    """Map session names to their storage bucket (file)."""
+    return BUCKET_ALIAS.get(name, name)
+
+# -----------------------------------------------------------------------------
+# Data structures
+# -----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class ExportResult:
-    """Result of one export operation.
+    """Result of one export/append operation.
 
     Attributes:
-        session_name: Canonical FastF1 session name, e.g. "Qualifying", "Race".
-        written_path: Filesystem path written for this export, if any.
-        status: One of {"written", "skipped", "error"} describing the outcome.
-        message: Extra context (e.g., "File exists" or an error description).
+        session_name: Canonical FastF1 session name (e.g., "Qualifying", "Race").
+        written_path: Filesystem path written/modified for this export, if any.
+        status: One of {"written", "appended", "skipped", "error"}.
+        message: Extra context (e.g., "No new weekends to append." or error info).
     """
     session_name: str
     written_path: Optional[str]
@@ -89,6 +117,9 @@ class ExportResult:
     message: Optional[str] = None
 
 
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
 def _ensure_dir(path: str) -> None:
     """Ensure a directory exists (create parents as needed).
 
@@ -132,7 +163,9 @@ def _results_ready(sess) -> bool:
 
 
 def _event_get(ev, *keys, default=None):
-    """Safely fetch an attribute or mapping key from a FastF1 Event across versions/casings.
+    """Safely fetch an attribute or mapping key from a FastF1 Event.
+
+    Tries multiple keys to be robust to version/casing differences.
 
     Args:
         ev: Event-like object returned by FastF1 (or mapping-like).
@@ -150,7 +183,7 @@ def _event_get(ev, *keys, default=None):
                 pass
         try:
             if ev is not None and hasattr(ev, "__getitem__"):
-                return ev[k]
+                return ev[k]  # may raise
         except Exception:
             continue
     return default
@@ -165,17 +198,18 @@ def _build_results_df(sess, session_name: str) -> _pd.DataFrame:
 
     Returns:
         Normalized results with a stable set of meta and classification columns.
-        Columns guaranteed to exist include:
-        WeekendId, Season, RoundNumber, EventName, SessionName, SessionStart,
-        DriverNumber, Abbreviation, DriverId, BroadcastName, TeamName,
-        GridPosition, ClassifiedPosition, Status, Q1, Q2, Q3, BestLapTime, BestLapSpeed.
+        Guaranteed columns:
+            WeekendId, Season, RoundNumber, EventName, SessionName, SessionStart,
+            DriverNumber, Abbreviation, DriverId, BroadcastName, TeamName,
+            GridPosition, ClassifiedPosition, Status, Q1, Q2, Q3, BestLapTime, BestLapSpeed.
 
     Notes:
-        - Handles differences in FastF1 event attribute casing (e.g., year vs Year).
-        - Preserves any extra columns present in `sess.results` after the standard ones.
+        * Handles differences in FastF1 event attribute casing (e.g., year vs Year).
+        * Preserves any extra columns present in `sess.results` after the standard ones.
     """
     df = sess.results.copy()
 
+    # Robust event meta
     year_val  = _event_get(sess.event, "Year", "year")
     round_val = _event_get(sess.event, "RoundNumber", "round", "Round")
     event_nm  = _event_get(sess.event, "EventName", "OfficialEventName", "name", "Name")
@@ -187,6 +221,7 @@ def _build_results_df(sess, session_name: str) -> _pd.DataFrame:
     df.insert(3, "EventName", event_nm)
     df.insert(4, "SessionName", session_name)
 
+    # Session start (ISO-UTC when available)
     start_attr = getattr(sess, "session_start_time", None)
     if isinstance(start_attr, _pd.Timestamp):
         session_start = start_attr.tz_convert("UTC").isoformat()
@@ -196,10 +231,12 @@ def _build_results_df(sess, session_name: str) -> _pd.DataFrame:
         session_start = None
     df.insert(5, "SessionStart", session_start)
 
+    # Ensure stable columns exist
     for col in DEFAULT_KEEP_COLS:
         if col not in df.columns:
             df[col] = _pd.NA
 
+    # Order: standard subset first, then extras
     keep = [c for c in DEFAULT_KEEP_COLS if c in df.columns]
     rest = [c for c in df.columns if c not in set(keep)]
     return df[keep + rest].copy()
@@ -215,7 +252,7 @@ def _collect_results_for_event(
     Args:
         season: Championship year.
         gp_name: Grand Prix name (must match FastF1 naming, e.g., "Italian Grand Prix").
-        session_names: Canonical FastF1 session names to attempt (subset of:
+        session_names: Canonical session names to attempt (subset of:
             "Sprint Qualifying", "Sprint Shootout", "Sprint", "Qualifying", "Race").
 
     Returns:
@@ -251,47 +288,121 @@ def _collect_results_for_event(
     return out
 
 
+def _align_union_columns(existing: _pd.DataFrame, incoming: _pd.DataFrame) -> Tuple[_pd.DataFrame, _pd.DataFrame]:
+    """Column-union align two DataFrames so they can be concatenated safely.
+
+    Args:
+        existing: Previously stored DataFrame (from disk).
+        incoming: New rows to append.
+
+    Returns:
+        A tuple of (existing_aligned, incoming_aligned) with the same ordered columns.
+    """
+    all_cols = list(dict.fromkeys(list(existing.columns) + list(incoming.columns)))
+    return existing.reindex(columns=all_cols), incoming.reindex(columns=all_cols)
+
+
+def _coerce_dedup_key_types(df: _pd.DataFrame) -> _pd.DataFrame:
+    """Cast dedup keys to string to avoid '1' vs '01' / int vs str mismatches.
+
+    Args:
+        df: DataFrame to coerce in place for dedup keys.
+
+    Returns:
+        The same DataFrame, with DEDUP_KEYS cast to string when present.
+    """
+    for k in DEDUP_KEYS:
+        if k in df.columns:
+            df[k] = df[k].astype(str)
+    return df
+
+
+def _read_existing_weekend_ids(season: int, sname: str) -> Set[str]:
+    """Load existing season CSV for this session and return its WeekendIds.
+
+    Args:
+        season: Championship year.
+        sname: Canonical session name.
+
+    Returns:
+        A set of WeekendId strings already stored for this session. If the season
+        CSV does not yet exist, returns an empty set.
+    """
+    sname_bucket = _bucket_session_name(sname)
+    path = f"{SSOT_DIR}/{season}_{SESSION_TO_STEM[sname_bucket]}.csv"
+    if not _Path(path).exists():
+        return set()
+    try:
+        df = _pd.read_csv(path, usecols=["WeekendId"])
+        return set(df["WeekendId"].astype(str).unique())
+    except Exception:
+        return set()
+
+
+def _append_dedup_by_keys(path: str, new_parts: List[_pd.DataFrame]) -> ExportResult:
+    """Append new parts into `path` with unioned columns and dedup by DEDUP_KEYS.
+
+    Args:
+        path: Output CSV path for a given session type and season.
+        new_parts: List of normalized DataFrames to append.
+
+    Returns:
+        ExportResult with status "written" (created), "appended" (added rows), or "skipped".
+    """
+    if not new_parts:
+        return ExportResult("UNKNOWN", None, "skipped", "No new parts to append.")
+
+    df_new = _pd.concat(new_parts, ignore_index=True)
+    df_new = _coerce_dedup_key_types(df_new)
+
+    if "RoundNumber" in df_new.columns:
+        df_new = df_new.sort_values(["RoundNumber", "DriverNumber"], kind="mergesort")
+
+    if _Path(path).exists():
+        df_old = _pd.read_csv(path)
+        df_old = _coerce_dedup_key_types(df_old)
+        df_old, df_new = _align_union_columns(df_old, df_new)
+        combined = _pd.concat([df_old, df_new], ignore_index=True)
+
+        if all(k in combined.columns for k in DEDUP_KEYS):
+            combined = combined.drop_duplicates(DEDUP_KEYS, keep="first")  # keep previously stored rows
+
+        combined.to_csv(path, index=False)
+        return ExportResult("UNKNOWN", path, "appended", "Appended new weekends (deduped).")
+    else:
+        _to_csv(df_new, path)
+        return ExportResult("UNKNOWN", path, "written", "Created file with first data batch.")
+
+
+# -----------------------------------------------------------------------------
+# Public API
+# -----------------------------------------------------------------------------
 def export_completed_classifications_csv(
     season: int,
     include_sprint: bool = True,
-    overwrite: bool = False,
     up_to_utc: "datetime | None" = None,
 ) -> Dict[str, ExportResult]:
-    """Export ONE CSV per session type for all sessions that have already happened.
+    """Append only **missing** weekends to per-session season CSVs.
 
     Args:
         season: Championship year to export.
-        include_sprint: If True, also export Sprint Qualifying/Shootout and Sprint files.
-        overwrite: If False, skip writing when the target CSV already exists;
-            if True, overwrite existing CSVs.
+        include_sprint: If True, also maintain Sprint Qualifying/Shootout and Sprint files.
         up_to_utc: Optional UTC cutoff timestamp. Only sessions that have *started*
             before this instant (per the official schedule) are considered. If None, uses now.
 
     Returns:
-        Map of session type → ExportResult with status/written_path information.
-        Keys are the canonical session names: "Qualifying", "Race", "Sprint Qualifying", "Sprint".
+        Map of canonical session name → ExportResult. Status is one of
+        {"written", "appended", "skipped", "error"}.
 
-    Side Effects:
-        Writes up to four CSV files into `data/predictions/ssot/`:
-            - {season}_qualifying.csv
-            - {season}_race.csv
-            - {season}_sprint_qualifying.csv
-            - {season}_sprint.csv
-
-    Notes:
-        - Session inclusion is derived from `_official_schedule(...)` and `_sessions_completed(...)`
-          so it respects sprint vs non-sprint formats.
-        - Each per-session CSV concatenates rows across all completed events in ascending RoundNumber order.
-        - Results are included only if FastF1 exposes `sess.results` for the session.
+    Behavior:
+        * Uses `_official_schedule` + `_sessions_completed` to decide which sessions should exist by `up_to_utc`.
+        * Loads FastF1 `sess.results` for those sessions, normalizes columns, and **appends** to the season CSV for that session type.
+        * **Skips** weekends already present by checking existing `WeekendId`s up front.
+        * Deduplicates by (WeekendId, DriverNumber) as a final guard.
 
     Examples:
-        >>> from datetime import datetime, timezone
-        >>> # Export everything up to "now"
-        >>> export_completed_classifications_csv(2025, include_sprint=True, overwrite=False)
-        {'Qualifying': ExportResult(...), 'Race': ExportResult(...), ...}
-        >>> # Export only sessions that started before a cutoff
-        >>> cutoff = datetime(2025, 9, 6, 12, 0, tzinfo=timezone.utc)
-        >>> export_completed_classifications_csv(2025, include_sprint=True, up_to_utc=cutoff)
+        >>> # Export/append all completed sessions up to now
+        >>> export_completed_classifications_csv(2025, include_sprint=True)
     """
     from datetime import datetime, timezone
 
@@ -302,7 +413,16 @@ def export_completed_classifications_csv(
     if include_sprint:
         wanted_codes |= {"SQ", "SS", "S"}
 
-    acc: Dict[str, List[_pd.DataFrame]] = {
+    # 1) Snapshot which weekends are already stored per session
+    existing_ids: Dict[str, Set[str]] = {
+        "Qualifying": _read_existing_weekend_ids(season, "Qualifying"),
+        "Race": _read_existing_weekend_ids(season, "Race"),
+        "Sprint Qualifying": _read_existing_weekend_ids(season, "Sprint Qualifying"),
+        "Sprint": _read_existing_weekend_ids(season, "Sprint"),
+    }
+
+    # 2) Collect only weekends NOT already present
+    acc_new: Dict[str, List[_pd.DataFrame]] = {
         "Qualifying": [],
         "Race": [],
         "Sprint Qualifying": [],
@@ -314,37 +434,110 @@ def export_completed_classifications_csv(
         name = ev.EventName or ""
         fp1_utc = ev.Session1DateUtc
 
+        # Skip pre-season testing
         if fmt == "testing" or "test" in name.lower():
             continue
 
         completed = _sessions_completed(fmt, fp1_utc, now)
         to_try = [LABEL_TO_SESSION_NAME[c] for c in completed if c in wanted_codes]
 
+        # Collect normalized results if available
         res_map = _collect_results_for_event(season, name, to_try)
         for sname, df in res_map.items():
-            acc[sname].append(df)
+            bucket = _bucket_session_name(sname)
+            df = _coerce_dedup_key_types(df)
+            wk_ids = set(df["WeekendId"].astype(str).unique())
+            missing = [wid for wid in wk_ids if wid not in existing_ids[bucket]]
+            if not missing:
+                continue
 
+            df_new_only = df[df["WeekendId"].astype(str).isin(missing)]
+            if not df_new_only.empty:
+                acc_new[bucket].append(df_new_only)
+                existing_ids[bucket].update(missing)
+
+    # 3) Append new rows per session file
     _ensure_dir(SSOT_DIR)
-    written: Dict[str, ExportResult] = {}
+    results: Dict[str, ExportResult] = {}
 
-    for sname, parts in acc.items():
-        if not parts:
-            written[sname] = ExportResult(sname, None, "skipped", "No completed sessions or results yet.")
-            continue
-
-        df = _pd.concat(parts, ignore_index=True)
-        if "RoundNumber" in df.columns:
-            df = df.sort_values(["RoundNumber", "DriverNumber"], kind="mergesort")
-
+    for sname, parts in acc_new.items():
         stem = SESSION_TO_STEM[sname]
         outpath = f"{SSOT_DIR}/{season}_{stem}.csv"
 
-        if _Path(outpath).exists() and not overwrite:
-            written[sname] = ExportResult(sname, outpath, "skipped", "File exists; use overwrite=True to replace.")
+        if not parts:
+            if _Path(outpath).exists():
+                results[sname] = ExportResult(sname, outpath, "skipped", "No new weekends to append.")
+            else:
+                results[sname] = ExportResult(sname, None, "skipped", "Nothing to write yet.")
             continue
 
-        _to_csv(df, outpath)
-        written[sname] = ExportResult(sname, outpath, "written", None)
-        _logger.info("Wrote %s rows to %s", len(df), outpath)
+        res = _append_dedup_by_keys(outpath, parts)
+        # Normalize name in result
+        results[sname] = ExportResult(sname, res.written_path, res.status, res.message)
+        _logger.info("[%s] %s → %s", sname, res.status, res.written_path or res.message)
 
-    return written
+    return results
+
+def export_completed_classifications_csv_multi(
+    seasons: Iterable[int],
+    include_sprint: bool = True,
+    up_to_utc: "datetime | None" = None,
+) -> Dict[int, Dict[str, ExportResult]]:
+    """Run the append-only export across multiple seasons.
+
+    Args:
+        seasons: Iterable of championship years (e.g., `range(2023, 2026)` or `[2023, 2024, 2025]`).
+        include_sprint: If True, also maintain Sprint Qualifying/Shootout and Sprint files.
+        up_to_utc: Optional UTC cutoff timestamp. Only sessions that have *started*
+            before this instant (per the official schedule) are considered. If None, uses now.
+
+    Returns:
+        Dict mapping `season -> {session_name -> ExportResult}`.
+
+    Notes:
+        * Each season writes/updates its own per-session CSVs:
+          `{season}_qualifying.csv`, `{season}_race.csv`, `{season}_sprint_qualifying.csv`, `{season}_sprint.csv`.
+        * Idempotent: per season we only append **missing** weekends.
+    """
+    results: Dict[int, Dict[str, ExportResult]] = {}
+    for yr in seasons:
+        results[yr] = export_completed_classifications_csv(
+            season=yr,
+            include_sprint=include_sprint,
+            up_to_utc=up_to_utc,
+        )
+    return results
+
+
+def export_completed_classifications_csv_range(
+    start_year: int,
+    end_year: int,
+    include_sprint: bool = True,
+    up_to_utc: "datetime | None" = None,
+) -> Dict[int, Dict[str, ExportResult]]:
+    """Run the append-only export for an inclusive year range.
+
+    Args:
+        start_year: First season (inclusive).
+        end_year: Last season (inclusive). Must be >= start_year.
+        include_sprint: If True, also maintain Sprint Qualifying/Shootout and Sprint files.
+        up_to_utc: Optional UTC cutoff timestamp applied to each season.
+
+    Returns:
+        Dict mapping `season -> {session_name -> ExportResult}`.
+
+    Raises:
+        ValueError: If `end_year < start_year`.
+
+    Examples:
+        >>> # Append-only export for 2023–2025
+        >>> export_completed_classifications_csv_range(2023, 2025)
+    """
+    if end_year < start_year:
+        raise ValueError(f"end_year ({end_year}) must be >= start_year ({start_year})")
+    seasons = range(start_year, end_year + 1)
+    return export_completed_classifications_csv_multi(
+        seasons=seasons,
+        include_sprint=include_sprint,
+        up_to_utc=up_to_utc,
+    )

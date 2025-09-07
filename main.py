@@ -11,7 +11,7 @@ import os
 import warnings
 from datetime import datetime, timezone
 from helpers.general_utils import load_or_build_profiles
-from helpers.prediction import export_completed_classifications_csv
+from helpers.prediction import export_completed_classifications_csv_range
 
 # Suppress deprecated dtype warnings when setting LapStartTime
 warnings.filterwarnings(
@@ -71,17 +71,19 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
     print(f"✅ Driver timing profiles shape: {df_timing.shape}")
 
     # 4) Export available classifications if session results are ready
-    print("\n📤 Exporting available classifications...")
-
-    res = export_completed_classifications_csv(
-        season=to_year,
-        include_sprint=True,   # set False if to skip sprints
-        overwrite=False        # set True to regenerate the CSVs
+    print("\n📤 Exporting available classifications (append-only, multi-season)...")
+    res_by_season = export_completed_classifications_csv_range(
+        start_year=from_year,   # or args.from_year depending on your variable names
+        end_year=to_year,       # or args.to_year
+        include_sprint=True,
+        up_to_utc=None,         # or a parsed cutoff if you expose a flag
     )
 
-    for sess_type, r in res.items():
-        where = f" ({r.written_path})" if r.written_path else ""
-        print(f"  {sess_type:18s} → {r.status}{where if where else ''}")
+    for season, res in sorted(res_by_season.items()):
+        print(f"\n  📅 Season {season}")
+        for sess_type, r in res.items():
+            where = f" ({r.written_path})" if r.written_path else ""
+            print(f"    {sess_type:18s} → {r.status}{where}")
 
 
     print("\n🎉 Pipeline complete!")
