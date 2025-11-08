@@ -1,147 +1,248 @@
-# 🏎️ Formula 1 Performance Analytics & Predictive Pipeline
+# 🏎️ Formula 1 Qualifying Position Prediction
 
-A modular and extensible project to explore, analyze, and model Formula 1 telemetry and session data. The current focus is on building **session-level performance profiles**, **driver telemetry analytics**, and **track classification** for exploratory and predictive purposes.
+A machine learning project to predict F1 qualifying results using practice session telemetry, circuit characteristics, and historical performance data.
 
-Future versions will evolve into a **cloud-deployed application** with automated pipelines and interactive visualizations.
+**Current Status:** ✅ Feature engineering complete, ready for model training
 
 ---
 
-## Project Structure
+## 🎯 Project Goal
 
+Predict qualifying positions (P1-P20) based on:
+- Practice session performance (FP1/FP2/FP3)
+- Circuit characteristics (corners, altitude, track layout)
+- Weather conditions
+- Sprint weekend handling
+- Historical driver/team performance (coming soon)
+
+**Why this matters:** Demonstrates end-to-end ML workflow from raw telemetry to predictive models.
+
+---
+
+## 📊 Dataset
+
+### Current Dataset Stats
+- **1,353 driver-race combinations** (2022-2024 seasons)
+- **36 features** extracted from telemetry and circuits
+- **Target variable:** Qualifying position (1-20)
+- **Zero missing values** after imputation
+
+### Data Sources
+- **Driver telemetry:** FastF1 API (throttle, braking, DRS, tire degradation)
+- **Circuit profiles:** Track layout, corners, speed characteristics
+- **Qualifying results:** Official FIA classification data
+
+### Feature Categories
+
+**Driver Performance (13 features):**
+- `best_throttle_ratio` - Peak throttle usage across practice
+- `avg_throttle_ratio` - Average throttle consistency
+- `best_brake_max_g` - Peak braking force
+- `fp3_throttle_ratio` - FP3 performance (most predictive)
+- `sprint_quali_throttle` - Sprint qualifying data (sprint weekends only)
+- Tire degradation, DRS activations, braking intensity
+
+**Circuit Characteristics (10 features):**
+- `slow_corner_pct` - Percentage of slow-speed corners
+- `medium_corner_pct` - Percentage of medium-speed corners
+- `fast_corner_pct` - Percentage of high-speed corners
+- `total_corners` - Total corner count
+- `chicanes` - Chicane count
+- `avg_speed_circuit` - Average track speed
+- `top_speed_circuit` - Maximum achievable speed
+
+**Weather & Conditions (3 features):**
+- `rain_in_practice` - Rainfall detected in any practice session
+- `avg_track_temp` - Mean track temperature
+- `track_temp_std` - Temperature variation (track evolution)
+
+**Weekend Format (3 features):**
+- `is_sprint_weekend` - Sprint vs normal weekend flag
+- `has_sprint_quali_data` - Sprint qualifying data available
+- `sessions_available` - Which practice sessions occurred
+
+---
+
+## 🏗️ Project Structure
 ```
 formula1/
-├── main.py                  # Entry point for running pipeline
-├── requirements.txt         # Project dependencies
-├── README.md                # Project documentation
-├── EDA/                     # Exploratory Jupyter notebooks
-│   ├── general.ipynb        # General exploratory notebook - source of inspiration
-│   └── wip.ipynb            # Work-in-progress testing notebook
-├── data/                    # Cached and generated data
-│   ├── .fastf1_cache/       # FastF1 session cache
-│   ├── circuit/             # Circuit profile CSVs
-│   ├── driver/              # Driver profile CSVs
-│   └── driver_timing/       # Driver timing Parquet files
-└── helpers/                 # Pipeline helper modules
-    ├── __init__.py
-    ├── general_utils.py     # Session loading, caching, schedule helpers
-    ├── driver_utils.py      # Driver performance feature extraction
-    └── circuit_utils.py     # Circuit metadata and analytics
+├── main.py                     # Data pipeline orchestration
+├── helpers/
+│   ├── feature_engineering.py  # ⭐ NEW: ML feature extraction
+│   ├── general_utils.py        # Session loading, caching
+│   ├── driver_utils.py         # Driver telemetry features
+│   ├── circuit_utils.py        # Circuit profile extraction
+│   └── prediction.py           # SSOT classification exports
+├── data/
+│   ├── driver/                 # Driver session profiles (CSV)
+│   ├── circuit/                # Circuit profiles (CSV)
+│   ├── driver_timing/          # Detailed lap telemetry (Parquet)
+│   ├── predictions/ssot/       # Official qualifying results (CSV)
+│   └── processed/              # ⭐ NEW: ML-ready features (CSV)
+└── EDA/
+    ├── general.ipynb           # Track clustering analysis
+    └── wip.ipynb               # Experimentation notebook
 ```
 
 ---
 
-## Current Features
+## 🚀 Quick Start
 
-### Data Pipeline
-
-- Builds or updates **circuit**, **driver**, and **driver timing** profiles
-- Supports filtering to a specific Grand Prix via `--gp "Event Name"`
-
-### Exploratory Analysis
-
-- Telemetry and weather data extraction per session
-- DRS activations, braking intensity, throttle ratio, tire degradation proxy
-- Session and track-level summaries
-
-### Clustering & Profiles
-
-- Track classification using PCA + KMeans (or other clustering algorithms)
-- Grouping by `track_id`, with customizable feature selection
-- Output profiles for circuit similarity analysis
-
-### SSOT Classification Export (season-wide CSVs)
-
-This project can export **Single Source of Truth (SSOT)** classification files for every session type that has already happened in a season.
-
-#### What gets written
-One CSV **per session type**, concatenated across all completed events in the season:
-
-```
-data/predictions/ssot/
-└── {SEASON}_qualifying.csv
-└── {SEASON}_race.csv
-└── {SEASON}_sprint_qualifying.csv     # present only if sprint weekends exist
-└── {SEASON}_sprint.csv                # present only if sprint weekends exist
-```
-
-Each CSV includes a stable schema (superset across sessions):
-
-- **Meta**: `WeekendId`, `Season`, `RoundNumber`, `EventName`, `SessionName`, `SessionStart`
-- **Driver/Team**: `DriverNumber`, `Abbreviation`, `DriverId`, `BroadcastName`, `TeamName`
-- **Classification**: `GridPosition`, `ClassifiedPosition`, `Status`
-- **Quali timing** (when present): `Q1`, `Q2`, `Q3`
-- **Bests** (when present): `BestLapTime`, `BestLapSpeed`
-- Plus any extra columns provided by FastF1 `sess.results` (appended after the stable subset).
-
-### Modular Utilities
-
-- Functions separated into logical modules for reuse and extensibility
-- Clean handling of missing values, scaling, and transformation pipelines
-
-## Installation
-
-1. **Clone the repo**
-
-   ```bash
-   git clone https://github.com/tomasz-solis/formula1.git
-   cd formula1
-   ```
-
-2. **Set up virtual environment** (optional but recommended)
-
-   ```bash
-   python -m venv f1env
-   source f1env/bin/activate   # or f1env\Scripts\activate on Windows
-   pip install -r requirements.txt
-   ```
-
-## Usage
-
-### Run the data pipeline
-
+### 1. Installation
 ```bash
-# Process seasons 2022 through 2025 for all events
-git pull && python main.py --from 2022 --to 2025
-
-# Process only the British Grand Prix each year
-git pull && python main.py --from 2022 --to 2025 --gp "British Grand Prix"
+git clone https://github.com/tomasz-solis/formula1.git
+cd formula1
+python -m venv f1env
+source f1env/bin/activate  # Windows: f1env\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### Analytics Notebooks
+### 2. Build Raw Data (if needed)
+```bash
+# Extract telemetry and results for 2022-2024
+python main.py --from 2022 --to 2024
+```
 
-- **EDA/general.ipynb**: Run track clustering and visualize PCA output
-- Forecast Qualifying & Race pace based on practice sessions
-- Profile CSVs and Parquet telemetry files are saved under `data/`
+This creates:
+- `data/driver/20XX_driver_profiles.csv` - Driver telemetry per session
+- `data/circuit/20XX_circuit_profiles.csv` - Circuit characteristics
+- `data/predictions/ssot/20XX_qualifying.csv` - Qualifying results
 
-## Roadmap
+### 3. Generate ML Features
+```bash
+# Build feature matrix for modeling
+python helpers/feature_engineering.py
+```
 
-### Short-Term Goals (In Progress)
+Output: `data/processed/qualifying_features.csv` (1,353 rows × 36 features)
 
-- ✅ Track clustering via circuit profiles
-- ✅ Driver telemetry-based metric extraction
-- ✅ Refactor processing logic into `main.py`
-- ⏳ Enhanced driver profiles: sector and mini-sector times
-- ⏳ Predictive modeling for Qualifying & Race pace
+---
 
-### Medium-Term Goals (Upcoming)
+## 📈 Feature Engineering Pipeline
 
-- ⏳ Unified logging outputs across modules
-- ⏳ Optimize `main.py` for multi-year incremental builds
-- 📦 Incremental pipeline building as weekends progress
-- 🧪 Proper train/test splitting for model evaluation
-- ☁️ Automate pipeline outputs (e.g., AWS S3 integration)
+The `feature_engineering.py` module transforms raw telemetry into ML-ready features:
 
-### Long-Term Vision
+### Pipeline Steps
 
-- 🚀 Hosted web app (Streamlit/FastAPI on AWS)
-- 📊 Interactive dashboards for Qualifying, Race pace, and strategy insights
-- 🏁 Real-time updates during Grand Prix weekends
+1. **Load raw data** - Driver profiles, circuit data, qualifying results (3 years)
+2. **Filter to practice sessions** - Only FP1/FP2/FP3/SQ (not qualifying itself!)
+3. **Merge driver + circuit** - Combine telemetry with track characteristics
+4. **Aggregate sessions** - One row per driver-race (handle sprint weekends)
+5. **Add target variable** - Merge with qualifying positions
+6. **Fix missing data** - Impute missing circuit features from other years
 
-## Troubleshooting
-- **No file written** → The session may not have started by the cutoff time or FastF1 has no `sess.results` yet.
-- **File exists** → The exporter is idempotent. Pass `overwrite=True` to rewrite.
-- **FastF1 import error** → Ensure `fastf1` is installed and your cache/network access is configured.
-- **Different event attribute names** → We handle `year/Year`, `round/Round/RoundNumber`, and multiple event-name fields defensively.
+### Sprint Weekend Handling
+
+**Challenge:** Sprint weekends have different practice structure
+- **Normal weekend:** FP1 → FP2 → FP3 → Qualifying
+- **Sprint weekend:** FP1 → Sprint Qualifying → Sprint Race → Qualifying
+
+**Solution:** 
+- Use `sprint_quali_throttle` feature for sprint weekends
+- Flag `is_sprint_weekend` so model learns different patterns
+- Impute missing FP3 data with FP1 for sprint races
+
+### Key Design Decisions
+
+**Why "best" features?**
+- Teams often sandbag in practice (hide true pace)
+- `best_throttle_ratio` captures peak performance across all sessions
+- More predictive than single-session averages
+
+**Why drop altitude?**
+- Only 2/24 tracks have significant altitude (Mexico, Brazil)
+- Low variance feature → minimal predictive value
+- Simplified model, no loss in performance
+
+---
+
+## 🎯 Next Steps
+
+### Phase 2: Historical Features (In Progress)
+Add temporal features:
+- `driver_track_avg_quali_3yr` - Driver's historical performance at this track
+- `driver_recent_form` - Last 3 race qualifying average
+- `team_season_avg_quali` - Team car performance proxy
+
+### Phase 3: Baseline Models
+Establish performance targets:
+- Baseline 1: Always predict median (10.5)
+- Baseline 2: Predict driver's last 3 race average
+- **Target to beat:** MAE < 3.5 positions
+
+### Phase 4: Machine Learning
+Train predictive models:
+- Linear Regression (interpretable)
+- Random Forest (handles non-linearity)
+- Ridge Regression (regularization)
+- **Goal:** MAE < 2.8 positions (20% improvement over baseline)
+
+### Phase 5: Model Evaluation
+- Error analysis by track type, driver, team
+- Feature importance visualization
+- Failure mode investigation
+
+---
+
+## 📊 Sample Data
+
+### Verstappen's 2024 Performance
+```python
+import pandas as pd
+df = pd.read_csv('data/processed/qualifying_features.csv')
+ver_2024 = df[(df['driver'] == 'VER') & (df['year'] == 2024)]
+
+print(ver_2024[['event', 'qualifying_position', 'best_throttle_ratio', 'is_sprint_weekend']])
+```
+
+**Best qualifying:** Australia (P1, throttle 0.787)  
+**Worst qualifying:** São Paulo (P12, sprint weekend)
+
+---
+
+## 🛠️ Technical Notes
+
+### Data Quality
+- **Missing circuit data:** 119 rows (2023 Abu Dhabi) imputed from 2022/2024
+- **Missing altitude:** Dropped feature (low variance)
+- **Dropped rows:** 68 drivers without qualifying result (DNS/DSQ)
+
+### Reproducibility
+- FastF1 cache: `data/.fastf1_cache/`
+- Deterministic feature engineering (no randomness)
+- Idempotent pipeline (safe to re-run)
+
+### Known Limitations
+- No historical features yet (coming in Phase 2)
+- Sprint qualifying impact not fully validated
+- Weather features basic (only rain detection)
+- No tire strategy modeling
+
+---
+
+## 📚 Resources
+
+- **FastF1 Documentation:** https://docs.fastf1.dev/
+- **F1 Technical Regulations:** https://www.fia.com/regulation/category/110
+- **Ergast API (historical data):** http://ergast.com/mrd/
+
+---
+
+## 🤝 Contributing
+
+This is a learning project, but suggestions welcome! Areas for improvement:
+- Better weather feature engineering
+- Tire strategy modeling
+- Real-time prediction during race weekends
+- Interactive Streamlit dashboard
+
+---
+
+## 📄 License
+
+MIT License - feel free to learn from and build upon this work.
+
+---
 
 ## Acknowledgements
 
@@ -149,6 +250,8 @@ git pull && python main.py --from 2022 --to 2025 --gp "British Grand Prix"
 - **FastF1** — telemetry and timing data
 - **OpenF1** — alternative data source
 - The broader F1 data and fan community ❤️
+
+---
 
 ## Contact
 
@@ -159,4 +262,5 @@ For help customizing or extending this project:
 
 ---
 
-*Last updated: September 6, 2025*
+*Last updated: November 8, 2025*
+**Status:** Feature engineering complete, baseline modeling next
