@@ -157,3 +157,10 @@ data/
 f1env/
 repos.code-workspace
 .DS_Store
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.pyc
+__pycache__/

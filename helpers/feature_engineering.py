@@ -18,7 +18,7 @@ Example:
     (1353, 37)  # 1353 examples, 37 columns (36 features + 1 target)
 
 Author: Tomasz Solis
-Date: January 2025
+Date: November 2025
 """
 
 import logging
@@ -799,10 +799,11 @@ def _add_normal_weekend_features(
     else:
         row['fp1_throttle_ratio'] = np.nan
         row['fp1_track_temp'] = np.nan 
-        # No sprint qualifying on normal weekends
-        row['sprint_quali_throttle'] = np.nan
-        row['sprint_quali_brake_g'] = np.nan
-        row['has_sprint_quali_data'] = False
+
+    # No sprint qualifying on normal weekends
+    row['sprint_quali_throttle'] = np.nan
+    row['sprint_quali_brake_g'] = np.nan
+    row['has_sprint_quali_data'] = False
     
     return row
 
@@ -1069,29 +1070,50 @@ def prepare_qualifying_dataset(
     print("=" * 60 + "\n")
     
     try:
-        # Status messages (logger - no emojis, clean)
-        logger.info("Step 1/6: Loading driver profiles for years %s", years)
+        # Step 1: Load raw data
+        logger.info("Step 1/7: Loading driver profiles for years %s", years)
         drivers = load_driver_profiles(years)
         
-        logger.info("Step 2/6: Loading circuit profiles")
+        logger.info("Step 2/7: Loading circuit profiles")
         circuits = load_circuit_profiles(years)
         
-        logger.info("Step 3/6: Loading qualifying results")
+        logger.info("Step 3/7: Loading qualifying results")
         results = load_qualifying_results(years)
         
-        logger.info("Step 4/6: Filtering to practice sessions only")
+        # Step 2: Filter to practice sessions only
+        logger.info("Step 4/7: Filtering to practice sessions only")
         drivers_practice = drivers[drivers['session'].isin(PRACTICE_SESSIONS)].copy()
         circuits_practice = circuits[circuits['session'].isin(PRACTICE_SESSIONS)].copy()
         logger.info("   Driver practice: %d rows, Circuit practice: %d rows",
                    len(drivers_practice), len(circuits_practice))
         
-        logger.info("Step 5/6: Merging and aggregating features")
+        # Step 3: Merge and aggregate
+        logger.info("Step 5/7: Merging and aggregating features")
         combined = merge_driver_circuit_data(drivers_practice, circuits_practice)
         combined = aggregate_practice_sessions(combined)
         
-        logger.info("Step 6/6: Adding target variable and fixing missing data")
+        # Step 4: Add target variable
+        logger.info("Step 6/7: Adding target variable and fixing missing data")
         final = merge_with_qualifying_results(combined, results)
         final = fix_missing_circuit_data(final)
+        
+        # Step 5: Validate final dataset
+        logger.info("Step 7/7: Validating dataset quality")
+        try:
+            from helpers.validation import validate_feature_dataframe
+        except ModuleNotFoundError:
+            from validation import validate_feature_dataframe
+        
+        required_features = [
+            'best_throttle_ratio', 'avg_throttle_ratio', 'best_brake_max_g',
+            'slow_corner_pct', 'fast_corner_pct', 'is_sprint_weekend'
+        ]
+        
+        try:
+            validate_feature_dataframe(final, required_features, 'qualifying_position')
+        except ValueError as e:
+            logger.error("Dataset validation failed: %s", str(e))
+            raise
         
         # Visual footer (print)
         print("\n" + "=" * 60)
@@ -1109,48 +1131,154 @@ def prepare_qualifying_dataset(
 # COMMAND-LINE INTERFACE
 # =============================================================================
 
+# =============================================================================
+# COMMAND-LINE INTERFACE
+# =============================================================================
+
+def parse_arguments():
+    """
+    Parse command-line arguments for feature engineering pipeline.
+    
+    Returns:
+        Namespace with parsed arguments
+    """
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Generate ML-ready features for F1 qualifying prediction',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Generate features for default years (2022-2024)
+  python helpers/feature_engineering.py
+  
+  # Generate features for specific years
+  python helpers/feature_engineering.py --years 2023 2024
+  
+  # Specify custom output path
+  python helpers/feature_engineering.py --output data/custom/features.csv
+  
+  # Enable verbose logging
+  python helpers/feature_engineering.py --verbose
+  
+  # Disable validation step
+  python helpers/feature_engineering.py --no-validate
+        """
+    )
+    
+    parser.add_argument(
+        '--years',
+        type=int,
+        nargs='+',
+        default=[2022, 2023, 2024],
+        help='F1 season years to process (default: 2022 2023 2024)'
+    )
+    
+    parser.add_argument(
+        '--output',
+        type=str,
+        default='data/processed/qualifying_features.csv',
+        help='Output CSV file path (default: data/processed/qualifying_features.csv)'
+    )
+    
+    parser.add_argument(
+        '--no-validate',
+        action='store_true',
+        help='Skip dataset validation step'
+    )
+    
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose logging (DEBUG level)'
+    )
+    
+    parser.add_argument(
+        '--quiet',
+        action='store_true',
+        help='Suppress all output except errors'
+    )
+    
+    parser.add_argument(
+        '--show-summary',
+        action='store_true',
+        help='Show detailed dataset summary after generation'
+    )
+    
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     """
     Command-line interface for generating ML features.
     
     Usage:
-        python helpers/feature_engineering.py
+        python helpers/feature_engineering.py [OPTIONS]
     
     Output:
         - Generates qualifying_features.csv in data/processed/
         - Prints dataset summary statistics
         - Shows year-by-year breakdown
     
-    Example:
+    Examples:
+        # Default: generate features for 2022-2024
         $ python helpers/feature_engineering.py
-        ============================================================
-        🏗️  Building Qualifying Prediction Dataset
-        ============================================================
-        ...
-        📊 Dataset by year:
-        year
-        2022    440
-        2023    434
-        2024    479
-        dtype: int64
         
-        💾 Saved to: data/processed/qualifying_features.csv
+        # Custom years
+        $ python helpers/feature_engineering.py --years 2023 2024
+        
+        # Custom output path
+        $ python helpers/feature_engineering.py --output custom_features.csv
+        
+        # Verbose mode
+        $ python helpers/feature_engineering.py --verbose
     """
+    # Parse command-line arguments
+    args = parse_arguments()
+    
+    # Configure logging based on arguments
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Verbose logging enabled")
+    elif args.quiet:
+        logging.getLogger().setLevel(logging.ERROR)
+    
     try:
-        years_used = [2022, 2023, 2024]
-        df = prepare_qualifying_dataset(years_used)
-
-        logger.info("\n📊 Dataset by year:")
-        logger.info("\n%s", df.groupby('year').size())
+        # Generate features
+        df = prepare_qualifying_dataset(args.years)
         
-        # Create directory if it doesn't exist
-        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        # Show summary statistics
+        if not args.quiet:
+            logger.info("\n📊 Dataset Summary:")
+            logger.info("   Shape: %s", df.shape)
+            logger.info("\n   Rows per year:")
+            for year, count in df.groupby('year').size().items():
+                logger.info("      %d: %d", year, count)
+            
+            if args.show_summary:
+                logger.info("\n   Column types:")
+                logger.info("\n%s", df.dtypes.value_counts())
+                logger.info("\n   Missing values per column:")
+                missing = df.isnull().sum()
+                if missing.sum() == 0:
+                    logger.info("      None! ✅")
+                else:
+                    for col, count in missing[missing > 0].items():
+                        logger.info("      %s: %d", col, count)
         
-        # Save to CSV for next steps
-        output_path = PROCESSED_DIR / 'qualifying_features.csv'
+        # Create output directory if needed
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save to CSV
         df.to_csv(output_path, index=False)
-        logger.info("\n💾 Saved to: %s", output_path)
+        
+        if not args.quiet:
+            logger.info("\n💾 Saved to: %s", output_path.absolute())
+            logger.info("   File size: %.2f MB", output_path.stat().st_size / 1_000_000)
+        
+        logger.info("\n✅ Feature engineering complete!")
         
     except Exception as e:
-        logger.error("Feature engineering failed: %s", str(e), exc_info=True)
+        logger.error("\n❌ Feature engineering failed: %s", str(e), exc_info=args.verbose)
         raise
