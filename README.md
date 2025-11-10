@@ -198,6 +198,48 @@ print(ver_2024[['event', 'qualifying_position', 'best_throttle_ratio', 'is_sprin
 **Best qualifying:** Australia (P1, throttle 0.787)  
 **Worst qualifying:** São Paulo (P12, sprint weekend)
 
+## 🖥️ Feature Engineering - Command-Line Usage
+
+### Basic Usage
+```bash
+# Generate features for 2022-2024 (default)
+python helpers/feature_engineering.py
+```
+
+### Advanced Options
+```bash
+# Custom years
+python helpers/feature_engineering.py --years 2023 2024
+
+# Custom output path
+python helpers/feature_engineering.py --output data/custom/features.csv
+
+# Verbose logging
+python helpers/feature_engineering.py --verbose
+
+# Show detailed summary
+python helpers/feature_engineering.py --show-summary
+
+# Quiet mode (only errors)
+python helpers/feature_engineering.py --quiet
+```
+
+## 🧪 Testing
+
+Run unit tests:
+```bash
+# All tests
+pytest tests/test_feature_engineering.py -v
+
+# With coverage
+pytest tests/ --cov=helpers --cov-report=html
+```
+
+### Get Help
+```bash
+python helpers/feature_engineering.py --help
+```
+
 ---
 
 ## 🛠️ Technical Notes

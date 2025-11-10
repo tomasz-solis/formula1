@@ -1,7 +1,25 @@
 """
 General utilities for the F1 analytics pipeline.
 
-Includes session loading, data fetching, caching logic, and batch data processing helpers.
+This module provides core infrastructure for F1 data processing including:
+- Session loading with automatic FastF1→OpenF1 fallback
+- Event schedule management and session filtering
+- Weather data extraction
+- Elevation data lookup via Open-Meteo API
+- Caching and file management utilities
+- Progress bar suppression for nested iterations
+
+These utilities are used across all other helper modules to provide
+consistent data access patterns and robust error handling.
+
+Example:
+    >>> from helpers.general_utils import load_session, get_elevation
+    >>> info = load_session(2024, 'Monaco Grand Prix', 'Q')
+    >>> if info['status'] == 'ok':
+    ...     print(f"Loaded via {info['source']}")
+
+Author: Tomasz Solis
+Date: November 2025
 """
 
 # Library imports
@@ -13,6 +31,7 @@ import requests
 import pandas as pd
 import fastf1 as ff1
 import warnings
+import numpy as np
 
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -21,9 +40,10 @@ from contextlib import contextmanager
 from tqdm import tqdm
 
 
-# ----------------------------------------------------------------------------
-# Logging configuration
-# ----------------------------------------------------------------------------
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
 # Suppress noisy FutureWarnings from fastf1
 warnings.filterwarnings(
     "ignore",
@@ -35,17 +55,33 @@ warnings.filterwarnings(
 logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 
-# ----------------------------------------------------------------------------
-# Context managers
-# ----------------------------------------------------------------------------
+
+# =============================================================================
+# CONTEXT MANAGERS
+# =============================================================================
 
 @contextmanager
 def _suppress_inner_tqdm():
     """
-    Temporarily disable inner tqdm progress bars when nested.
-
+    Context manager to suppress nested tqdm progress bars.
+    
+    Monkey-patches tqdm.__init__ to force disable=True on all inner progress
+    bars created within the context. Restores original behavior on exit.
+    Prevents visual clutter when functions with progress bars call other
+    functions that also use progress bars.
+    
     Yields:
-        None: Suppresses inner tqdm __init__ by forcing disable=True.
+        None
+        
+    Example:
+        >>> with _suppress_inner_tqdm():
+        ...     for year in tqdm(years):  # This shows
+        ...         for event in tqdm(events):  # This is suppressed
+        ...             process(event)
+                
+    Note:
+        Uses monkey-patching - not thread-safe. Intended for single-threaded
+        scripts with nested iteration patterns.
     """
     try:
         from tqdm import tqdm as tqdm_module
@@ -57,16 +93,26 @@ def _suppress_inner_tqdm():
         # Restore original tqdm constructor
         tqdm_module.__init__ = original
 
-# ----------------------------------------------------------------------------
-# Session loading and caching
-# ----------------------------------------------------------------------------
+
+# =============================================================================
+# SESSION LOADING AND CACHING
+# =============================================================================
 
 def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]:
     """
-    For a given event format + event row, return mapping:
-    symbolic name → FastF1 schedule date column (e.g., 'Session1DateUtc')
-
-    Example: {"FP1": "Session1DateUtc", "Q": "Session4DateUtc", ...}
+    Map session symbolic names to FastF1 schedule date column names.
+    
+    FastF1 schedules use generic columns (Session1, Session2, etc.) that
+    map to different session types depending on event format. Creates
+    mapping from symbolic names (FP1, Q, R) to actual column names.
+    
+    Args:
+        event_format: Event format from schedule ('conventional', 'sprint', etc.)
+        event_row: Single row from FastF1 schedule DataFrame
+    
+    Returns:
+        Dictionary mapping symbolic session names to schedule column names.
+        Example: {'FP1': 'Session1DateUtc', 'Q': 'Session4DateUtc', ...}
     """
     symbolic_to_real: dict[str, str] = {
         "FP1": "Practice 1",
@@ -91,13 +137,22 @@ def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]
 
 def _official_schedule(year: int) -> pd.DataFrame:
     """
-    Get official F1 schedule using multiple backends with fallbacks.
+    Get official F1 schedule with multiple backend fallbacks.
+    
+    Attempts to load schedule using FastF1's backends in order:
+    fastf1 → f1timing → ergast. Each backend may have different
+    reliability and data freshness.
 
     Parameters:
-        year (int): Championship year.
+        year: F1 championship year (e.g., 2024)
 
     Returns:
-        pd.DataFrame: F1 event schedule for the given year.
+        DataFrame with F1 event schedule containing EventName, RoundNumber,
+        EventFormat, Location, Session1DateUtc through Session5DateUtc, etc.
+        
+    Example:
+        >>> sched = _official_schedule(2024)
+        >>> print(sched[['EventName', 'EventFormat']].head())
     """
     try:
         sched = ff1.get_event_schedule(year, backend="fastf1")
@@ -123,12 +178,19 @@ def _official_schedule(year: int) -> pd.DataFrame:
 def get_expected_sessions(year: int) -> Dict[str, List[str]]:
     """
     Determine which session names to expect for a given season.
+    
+    Maps each event to its expected session list based on event format.
 
     Parameters:
-        year (int): Championship year.
+        year: F1 championship year
 
     Returns:
-        Dict mapping 'YYYY_RR' key to list of real session names.
+        Dictionary mapping 'YYYY_RR' key to list of session names
+        
+    Example:
+        >>> sessions = get_expected_sessions(2024)
+        >>> print(sessions['2024_01'])  # Bahrain
+        ['Practice 1', 'Practice 2', 'Practice 3', 'Qualifying', 'Race']
     """
     sched = _official_schedule(year)
     event_sessions: Dict[str, List[str]] = {}
@@ -155,7 +217,17 @@ def get_expected_sessions(year: int) -> Dict[str, List[str]]:
 
 def _session_list(event_format: str) -> List[str]:
     """
-    Map EventFormat string to list of session codes for data collection.
+    Map event format to list of session codes for data collection.
+    
+    Args:
+        event_format: Event format string from schedule
+    
+    Returns:
+        List of session codes in chronological order
+        
+    Example:
+        >>> _session_list('conventional')
+        ['FP1', 'FP2', 'FP3', 'Q', 'R']
     """
     fmt = (event_format or "").lower()
     if fmt == "testing":
@@ -174,7 +246,26 @@ def _sessions_completed(format_type: str,
                         fp1_utc: datetime,
                         now: datetime) -> List[str]:
     """
-    Given FP1 UTC start and current time, determine which sessions have started.
+    Determine which sessions have started based on FP1 time and current time.
+    
+    Uses typical session timing offsets relative to FP1 to determine
+    which sessions have already begun.
+    
+    Args:
+        format_type: Event format ('conventional', 'sprint', etc.)
+        fp1_utc: FP1 start time in UTC
+        now: Current time in UTC
+    
+    Returns:
+        List of session codes that have started
+        
+    Example:
+        >>> from datetime import datetime, timezone
+        >>> fp1 = datetime(2024, 3, 22, 1, 30, tzinfo=timezone.utc)
+        >>> now = datetime(2024, 3, 23, 6, 0, tzinfo=timezone.utc)
+        >>> completed = _sessions_completed('conventional', fp1, now)
+        >>> print(completed)
+        ['FP1', 'FP2', 'FP3', 'Q']
     """
     # Normalize tz-aware to naive UTC
     if fp1_utc.tzinfo:
@@ -197,7 +288,19 @@ def _sessions_completed(format_type: str,
 def _completed_sessions(schedule: pd.DataFrame,
                         now: datetime) -> List[tuple[int,str,str]]:
     """
-    Return list of (year, event_name, session_label) for all finished sessions.
+    Generate list of all completed sessions across all events in schedule.
+    
+    Args:
+        schedule: DataFrame from _official_schedule()
+        now: Current datetime in UTC
+    
+    Returns:
+        List of (year, event_name, session_code) tuples
+        
+    Example:
+        >>> sched = _official_schedule(2024)
+        >>> completed = _completed_sessions(sched, datetime.now(timezone.utc))
+        >>> print(f"Total completed: {len(completed)}")
     """
     todo: List[tuple[int,str,str]] = []
     for _, ev in schedule.iterrows():
@@ -216,19 +319,33 @@ def _completed_sessions(schedule: pd.DataFrame,
             
     return todo
 
-# Generic loaders
-                    
+
+# Generic loaders                   
 def load_session(year: int, event_name: str, session_name: str) -> dict:
     """
     Load a session via FastF1 with fallback to OpenF1 API.
+    
+    Attempts FastF1 first (includes telemetry). If FastF1 fails, falls
+    back to OpenF1 API (lap times only, no telemetry).
 
     Args:
-        year: F1 season year.
-        event_name: Grand Prix name.
-        session_name: Code ('FP1', 'Q', 'Race', etc.).
+        year: F1 season year
+        event_name: Grand Prix name
+        session_name: Session code ('FP1', 'Q', 'R', etc.)
 
     Returns:
-        dict with keys: source, session, laps, status, reason.
+        Dictionary with keys: source, session, laps, status, reason
+        - source: 'fastf1', 'openf1', or None
+        - session: FastF1.Session object or None
+        - laps: pd.DataFrame or None
+        - status: 'ok', 'fallback', or 'error'
+        - reason: Error message if status='error'
+        
+    Example:
+        >>> info = load_session(2024, 'Monaco Grand Prix', 'Q')
+        >>> if info['status'] == 'ok':
+        ...     session = info['session']
+        ...     print(f"Loaded via {info['source']}")
     """
     # Map short codes to FastF1 full names
     session_map = {
@@ -287,18 +404,26 @@ def load_session(year: int, event_name: str, session_name: str) -> dict:
             "reason": str(e)
         }
 
+
 def get_weather_info(session, year: int, event_name: str, session_name: str) -> dict:
     """
-    Extract weather information (temperature, humidity, pressure) from a session.
+    Extract weather information from session with OpenF1 fallback.
+    
+    Attempts to get weather data from FastF1 session first. If unavailable,
+    queries OpenF1 weather API endpoint.
 
     Args:
-        session (FastF1.Session or None): Loaded FastF1 session, or None if fallback needed.
-        year (int): Season year
-        event_name (str): Event name (e.g., 'Bahrain Grand Prix')
-        session_name (str): Session label ('FP1', 'Race', etc.)
+        session: FastF1.Session or None if loaded via OpenF1 fallback
+        year: Season year
+        event_name: Event name (e.g., 'Bahrain Grand Prix')
+        session_name: Session label ('FP1', 'Race', etc.)
 
     Returns:
-        dict with average air temp, track temp, and boolean rain presence
+        Dictionary with average air temp, track temp, and rain boolean
+        
+    Example:
+        >>> weather = get_weather_info(session, 2024, 'Singapore', 'Q')
+        >>> print(f"Track temp: {weather['track_temp_avg']:.1f}°C")
     """
     # Use FastF1 session if available
     if session is not None and hasattr(session, "weather_data") and not session.weather_data.empty:
@@ -312,7 +437,7 @@ def get_weather_info(session, year: int, event_name: str, session_name: str) -> 
     # Else fallback to OpenF1 weather endpoint
     try:
         url = "https://api.openf1.org/v1/weather"
-        params = {"year": year, "session": api_session_name}
+        params = {"year": year, "session": session_name}
         response = requests.get(url, params=params)
         response.raise_for_status()
         data = pd.DataFrame(response.json())
@@ -334,21 +459,28 @@ def get_weather_info(session, year: int, event_name: str, session_name: str) -> 
             "rain_detected": np.nan
         }
 
+
 @functools.lru_cache(maxsize=None)
 def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float:
     """
     Query Open-Meteo API for ground elevation at given coordinates.
+    
+    Results cached via LRU cache since elevation doesn't change.
 
     Args:
-        latitude: GPS latitude.
-        longitude: GPS longitude.
-        timeout: Request timeout in seconds.
+        latitude: GPS latitude in decimal degrees
+        longitude: GPS longitude in decimal degrees
+        timeout: Request timeout in seconds (default: 10)
 
     Returns:
-        Elevation in meters.
+        Elevation in meters
 
     Raises:
-        RuntimeError: If API returns no elevation.
+        RuntimeError: If API returns no elevation
+        
+    Example:
+        >>> elev = get_elevation(26.0325, 50.5106)  # Bahrain
+        >>> print(f"Elevation: {elev}m")
     """
     url = f"https://api.open-meteo.com/v1/elevation?latitude={latitude}&longitude={longitude}"
 
@@ -361,22 +493,33 @@ def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float
 
     return payload["elevation"][0]           # note: array, not dict
 
-# ----------------------------------------------------------------------------
-# Profile file management
-# ----------------------------------------------------------------------------
 
-# Cache maintenance helpers
+# =============================================================================
+# PROFILE FILE MANAGEMENT
+# =============================================================================
+
 def is_update_needed(cache_path: str, season: int = datetime.now(timezone.utc).year) -> bool:
     """
     Decide whether the cache CSV needs to be refreshed.
+    
+    Checks if we're within a race weekend or near the next race start.
 
-    Logic
-        1. If the file does **not** exist  → True
-        2. If *today* lies **inside** an ongoing race-weekend
-           (Session1DateUtc ≤ now ≤ Session1DateUtc + 4 days) → True
-        3. Else, look at the *next* race in the schedule:
-           • return **True** once within *6 h before* FP1
-           • otherwise **False**
+    Logic:
+        1. If file doesn't exist → True
+        2. If within ongoing race-weekend → True
+        3. If within 6h before next FP1 → True
+        4. Otherwise → False
+        
+    Args:
+        cache_path: Path to cache CSV file
+        season: F1 season year (default: current year)
+    
+    Returns:
+        True if cache should be updated/rebuilt
+        
+    Example:
+        >>> if is_update_needed('data/driver/2024_driver_profiles.csv', 2024):
+        ...     print("Updating cache...")
     """
     # missing cache → definitely rebuild 
     if not os.path.exists(cache_path):
@@ -421,9 +564,22 @@ def update_profiles_file(
 
     Supports 'circuit', 'driver', 'driver_timing'.
 
-    For file_type=="circuit", builds each missing session in single‐session mode.
+    For file_type=="circuit", builds each missing session in single-session mode.
     For file_type=="driver", fetches the FastF1 session then runs get_all_driver_features.
-    For file_type=="driver_timing", fetches detailed timing for each driver, except out/inlaps.
+    For file_type=="driver_timing", fetches detailed timing for each driver.
+    
+    Args:
+        cache_path: Path to existing cache CSV file
+        start_year: First year to check for updates (default: current year)
+        end_year: Last year to check (default: start_year)
+        file_type: 'circuit', 'driver', or 'driver_timing'
+    
+    Returns:
+        Tuple of (updated_df, skipped_df)
+        
+    Example:
+        >>> updated, skipped = update_profiles_file('data/driver/2024_driver_profiles.csv',
+        ...                                         2024, 2024, 'driver')
     """
     path = Path(cache_path)
     if not path.exists():
@@ -443,89 +599,116 @@ def update_profiles_file(
         completed = sched[sched.Session1DateUtc < now]
         todo = _completed_sessions(completed, now)
 
+        # COLLECT ALL MISSING SESSIONS FOR THIS YEAR
+        missing_sessions = []
         for yr, ev_name, sess_label in todo:
             key = (yr, ev_name, sess_label)
-            if key in existing_keys:
-                continue
+            if key not in existing_keys:
+                missing_sessions.append((ev_name, sess_label))
+        
+        if not missing_sessions:
+            continue  # No new sessions for this year
+        
+        print(f"📥 Adding {len(missing_sessions)} missing session(s) for {year}...")
+        for ev_name, sess_label in missing_sessions:
+            print(f"   → {ev_name} {sess_label}")
 
-            print(f"📥  appending {key} …")
-            
-            try:
+        try:
+            # BUILD ALL MISSING SESSIONS IN ONE CALL
+            if file_type == "circuit":
+                from .circuit_utils import _build_circuit_profile_df
                 
-               # Delegate to appropriate builder
+                # Convert to only_specific format
+                only_specific = {year: set(missing_sessions)}
+                
+                df_ok, df_fail = _build_circuit_profile_df(
+                    start_year=year,
+                    end_year=year,
+                    only_specific=only_specific
+                )
 
-                if file_type == "circuit":
-                    from .circuit_utils import _build_circuit_profile_df
-                    df_ok, df_fail = _build_circuit_profile_df(
-                        start_year=yr,
-                        end_year=yr,
-                        only_specific={yr: {(ev_name, sess_label)}}
-                    )
+            elif file_type == "driver":
+                from .driver_utils import _build_driver_profile_df
+                
+                # Convert to only_specific format
+                only_specific = {year: set(missing_sessions)}
+                
+                df_ok, df_fail = _build_driver_profile_df(
+                    start_year=year,
+                    end_year=year,
+                    only_specific=only_specific
+                )
+                
+            elif file_type == "driver_timing":
+                from .driver_utils import _build_detailed_telemetry
 
-                elif file_type == "driver":
-                    from .driver_utils import _build_driver_profile_df
-                    df_ok, df_fail = _build_driver_profile_df(
-                        start_year=yr,
-                        end_year=yr,
-                        only_specific={(ev_name, sess_label)}
-                    )
-                    
-                elif file_type == "driver_timing":
-                    from .driver_utils import _build_detailed_telemetry
-    
-                    out_dir = os.path.dirname(cache_path)
-                    os.makedirs(out_dir, exist_ok=True)
-    
-                    existing_files = {
-                        os.path.basename(p)
-                        for p in glob.glob(os.path.join(out_dir, "*.parquet"))
-                    }
-    
-                    chunks = []
-                    for yr, ev_name, sess_label in todo:
-                        # build the target filename
-                        fn = f"{yr}_{ev_name.replace(' ', '_')}_{sess_label}.parquet"
-                        if fn in existing_files:
-                            # skip already-written weekends
-                            continue
-    
-                        info = load_session(yr, ev_name, sess_label)
-                        if info.get("status") != "ok":
-                            continue
-                        sess_obj = info["session"]
-    
-                        df_tmp = _build_detailed_telemetry(sess_obj)
-                        df_tmp["year"] = yr
-                        df_tmp["event"] = ev_name
-                        df_tmp["session"] = sess_label
-    
-                        # write this weekend’s parquet
-                        path = os.path.join(out_dir, fn)
-                        df_tmp.to_parquet(path,
-                                          engine="pyarrow",
-                                          compression="snappy",
-                                          index=False)
-                        chunks.append(df_tmp)
-    
-                    df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-                    skipped = pd.DataFrame()
+                out_dir = os.path.dirname(cache_path)
+                os.makedirs(out_dir, exist_ok=True)
 
-                else:
-                    raise ValueError(f"Unsupported file_type: {file_type!r}")
+                existing_files = {
+                    os.path.basename(p)
+                    for p in glob.glob(os.path.join(out_dir, "*.parquet"))
+                }
 
+                chunks = []
+                for ev_name, sess_label in missing_sessions:
+                    fn = f"{year}_{ev_name.replace(' ', '_')}_{sess_label}.parquet"
+                    if fn in existing_files:
+                        continue
+
+                    info = load_session(year, ev_name, sess_label)
+                    if info.get("status") != "ok":
+                        continue
+                    sess_obj = info["session"]
+
+                    df_tmp = _build_detailed_telemetry(sess_obj)
+                    df_tmp["year"] = year
+                    df_tmp["event"] = ev_name
+                    df_tmp["session"] = sess_label
+
+                    out_path = os.path.join(out_dir, fn)
+                    df_tmp.to_parquet(out_path,
+                                      engine="pyarrow",
+                                      compression="snappy",
+                                      index=False)
+                    chunks.append(df_tmp)
+
+                df_ok = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
+                df_fail = pd.DataFrame()
+
+            else:
+                raise ValueError(f"Unsupported file_type: {file_type!r}")
+
+            # VALIDATION: Only add if data was extracted
+            if not df_ok.empty:
                 new_chunks.append(df_ok)
-                if df_fail is not None and not df_fail.empty:
-                    skipped.extend(df_fail.to_dict("records"))
+                print(f"   ✅ Extracted {len(df_ok)} row(s)")
+            else:
+                print(f"   ⚠️  No data available (likely DNS/no telemetry)")
+                # Mark all as skipped
+                for ev_name, sess_label in missing_sessions:
+                    skipped.append({
+                        "year": year,
+                        "event": ev_name,
+                        "session": sess_label,
+                        "reason": "No telemetry data available"
+                    })
+            
+            # Add failures from builder
+            if df_fail is not None and not df_fail.empty:
+                skipped.extend(df_fail.to_dict("records"))
 
-            except Exception as e:
-                print(f"⚠️ failed to append {key} → {e}")
+        except Exception as e:
+            print(f"⚠️ Failed to append sessions for {year}: {e}")
+            for ev_name, sess_label in missing_sessions:
                 skipped.append({
-                    "year": yr,
+                    "year": year,
                     "event": ev_name,
                     "session": sess_label,
-                    "reason":  str(e)
+                    "reason": str(e)
                 })
 
+    # Save if we have new data
     if new_chunks:
         updated = pd.concat([existing, *new_chunks], ignore_index=True)
         if updated.empty or updated.shape[1] == 0:
@@ -534,7 +717,7 @@ def update_profiles_file(
 
         updated.to_csv(path, index=False)
         total = sum(len(df) for df in new_chunks)
-        print(f"✅ added {total} row(s).")
+        print(f"✅ Added {total} row(s).")
         return updated, pd.DataFrame(skipped)
 
     print("ℹ️  No new sessions to append.")
@@ -548,19 +731,20 @@ def load_or_build_profiles(
     gp_name: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Loads cached profiles if available, otherwise builds from scratch or updates.
+    Load cached profiles if available, otherwise build from scratch or update.
 
-    Args
-        start_year : int
-        end_year   : int
-        file_type  : str
-            'circuit', 'driver', or 'driver_timing'
-        gp_name    : str, optional
-            If set and file_type=="circuit", only build circuit profiles for that GP.
+    Args:
+        start_year: First year to load/build
+        end_year: Last year to load/build
+        file_type: 'circuit', 'driver', or 'driver_timing'
+        gp_name: If set and file_type=="circuit", only build for that GP
 
-    Returns
-        df_profiles, 
-        df_skipped
+    Returns:
+        Tuple of (df_profiles, df_skipped)
+        
+    Example:
+        >>> profiles, skipped = load_or_build_profiles(2022, 2024, 'driver')
+        >>> print(f"Total records: {len(profiles)}")
     """
     # driver_timing logic
     if file_type == "driver_timing":
@@ -657,11 +841,16 @@ def ensure_year_dir(year: int, subdir: str = "data") -> str:
     Create (if needed) and return a directory for a given year under subdir.
 
     Parameters:
-        year (int): Year identifier.
-        subdir (str): Parent directory name.
+        year: Year identifier
+        subdir: Parent directory name (default: 'data')
 
     Returns:
-        str: Full path to year-specific directory.
+        Full path to year-specific directory
+        
+    Example:
+        >>> path = ensure_year_dir(2024)
+        >>> print(path)
+        data/2024
     """
     year_path = os.path.join(subdir, str(year))
     os.makedirs(year_path, exist_ok=True)

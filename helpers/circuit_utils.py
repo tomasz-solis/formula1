@@ -1,7 +1,23 @@
 """
 Circuit utilities for geometry and track-level analytics.
 
-Includes functions to fetch circuit list, extract metrics, build profiles, cluster analysis, and plot radar charts.
+This module provides comprehensive circuit analysis capabilities including:
+- Circuit metadata extraction (location, elevation, coordinates)
+- Track performance metrics (speed profiles, braking patterns)
+- Corner classification by entry speed (slow/medium/fast)
+- Circuit clustering analysis using PCA and KMeans
+- Visualization tools (radar charts, scatter plots)
+
+The module handles both FastF1 and OpenF1 data sources with automatic
+fallback mechanisms for robustness.
+
+Example:
+    >>> from helpers.circuit_utils import get_circuits, extract_track_metrics
+    >>> circuits = get_circuits(2024)
+    >>> print(circuits[['circuitName', 'altitude']].head())
+
+Author: Tomasz Solis
+Date: November 2025
 """
 
 # Library imports
@@ -27,20 +43,36 @@ from scipy.spatial import cKDTree
 log = logging.getLogger(__name__)
 
 
-#  Circuit lookup helpers
+# =============================================================================
+# CIRCUIT LOOKUP HELPERS
+# =============================================================================
+
 def get_elevation(latitude: float,
                   longitude: float,
                   timeout: int = 10) -> float:
     """
-    Fetch elevation data via general_utils.get_elevation wrapper.
-
+    Fetch ground elevation at GPS coordinates via Open-Meteo API.
+    
+    This is a wrapper around general_utils.get_elevation that maintains
+    the same interface for backward compatibility within this module.
+    
     Args:
-        latitude: GPS latitude in degrees.
-        longitude: GPS longitude in degrees.
-        timeout: Request timeout in seconds.
-
+        latitude: GPS latitude in decimal degrees (-90 to 90)
+        longitude: GPS longitude in decimal degrees (-180 to 180)
+        timeout: API request timeout in seconds (default: 10)
+    
     Returns:
-        Elevation in meters.
+        Elevation above sea level in meters
+        
+    Raises:
+        RuntimeError: If API returns no elevation data
+        requests.HTTPError: If API request fails
+        
+    Example:
+        >>> # Bahrain International Circuit
+        >>> elev = get_elevation(26.0325, 50.5106)
+        >>> print(f"Elevation: {elev}m")
+        Elevation: 7.0m
     """
     from .general_utils import get_elevation as _get_elev
     return _get_elev(latitude, longitude, timeout)
@@ -48,13 +80,26 @@ def get_elevation(latitude: float,
 
 def get_circuits(season: int) -> pd.DataFrame:
     """
-    Retrieve basic circuit metadata including location and altitude.
-
+    Retrieve circuit metadata for all tracks used in a season.
+    
+    Queries Ergast API for circuit info (name, location, coordinates),
+    then enriches each circuit with elevation data from Open-Meteo API.
+    
     Args:
-        season: Year of the F1 season.
-
+        season: F1 championship year (e.g., 2024)
+    
     Returns:
-        DataFrame with columns: circuitName, location, country, lat, lon, altitude.
+        DataFrame with columns:
+        - circuitName: Official circuit name (str)
+        - location: City/locality (str)
+        - country: Country name (str)
+        - lat: Latitude in decimal degrees (float)
+        - lon: Longitude in decimal degrees (float)
+        - altitude: Elevation above sea level in meters (float)
+        
+    Example:
+        >>> circuits_2024 = get_circuits(2024)
+        >>> print(circuits_2024[['circuitName', 'altitude']].head())
     """
     ergast = Ergast()
     racetracks = ergast.get_circuits(season)
@@ -87,13 +132,21 @@ def get_all_circuits(start_year: int = 2020,
                      end_year: int = 2025) -> pd.DataFrame:
     """
     Aggregate unique circuits across a range of seasons.
-
+    
+    Collects circuit metadata for multiple years and deduplicates by
+    circuit name, keeping the first occurrence.
+    
     Args:
-        start_year: First season year (inclusive).
-        end_year: Last season year (inclusive).
-
+        start_year: First season year, inclusive (default: 2020)
+        end_year: Last season year, inclusive (default: 2025)
+    
     Returns:
-        DataFrame of unique circuits with metadata.
+        DataFrame of unique circuits with metadata columns:
+        circuitName, location, country, lat, lon, altitude
+        
+    Example:
+        >>> all_circuits = get_all_circuits(2020, 2024)
+        >>> print(f"Total unique circuits: {len(all_circuits)}")
     """
     dfs = []
     for year in range(start_year, end_year + 1):
@@ -104,17 +157,37 @@ def get_all_circuits(start_year: int = 2020,
     return full.drop_duplicates(subset=['circuitName'], keep='first').reset_index(drop=True)
 
 
-#  Track feature extraction 
+# =============================================================================
+# TRACK FEATURE EXTRACTION
+# =============================================================================
+
 def extract_track_metrics(session) -> Optional[Dict[str, float]]:
     """
-    Extract average speed, top speed, and braking profile from a session.
-
+    Extract speed and braking characteristics from session's fastest lap.
+    
+    Analyzes telemetry to compute track-level metrics including speed
+    profile (low/medium/high speed percentages) and braking event count.
+    
+    Speed classification thresholds:
+        - Low speed: < 120 km/h
+        - Medium speed: 120-200 km/h
+        - High speed: ≥ 200 km/h
+    
     Args:
-        session: Loaded FastF1 session.
-
+        session: Loaded FastF1 session with telemetry data
+    
     Returns:
-        Dict with keys avg_speed, top_speed, braking_events,
-        low_pct, med_pct, high_pct, or None if failed.
+        Dictionary with track metrics, or None if extraction fails:
+        - avg_speed: Mean speed across lap (km/h)
+        - top_speed: Maximum speed reached (km/h)
+        - braking_events: Count of heavy braking (>30 km/h drop)
+        - low_pct: Fraction of lap below 120 km/h (0-1)
+        - med_pct: Fraction of lap between 120-200 km/h (0-1)
+        - high_pct: Fraction of lap above 200 km/h (0-1)
+        
+    Example:
+        >>> metrics = extract_track_metrics(session)
+        >>> print(f"Top speed: {metrics['top_speed']:.1f} km/h")
     """
     try:
         if session.laps.empty:
@@ -139,14 +212,23 @@ def extract_track_metrics(session) -> Optional[Dict[str, float]]:
 
 def get_valid_lap_with_pos(session, max_attempts: int = 5):
     """
-    Find a lap with valid positional data (X/Y).
-
+    Find a quick lap with valid positional data (X/Y coordinates).
+    
+    FastF1 position data is often incomplete or missing for certain drivers.
+    This iterates through fastest laps to find one with valid coordinates.
+    
     Args:
-        session: FastF1 session object.
-        max_attempts: Number of quick laps to try.
-
+        session: FastF1 session object
+        max_attempts: Maximum number of quick laps to try (default: 5)
+    
     Returns:
-        A Lap object with position data, or None if not found.
+        A Lap object with valid position data, or None if not found
+        
+    Example:
+        >>> lap = get_valid_lap_with_pos(session)
+        >>> if lap:
+        ...     pos = lap.get_pos_data()
+        ...     print(f"Found valid lap: Driver {lap.Driver}")
     """
     fast_laps = session.laps.pick_quicklaps().sort_values('LapTime')
     for i, lap in enumerate(fast_laps.itertuples()):
@@ -170,20 +252,43 @@ def get_circuit_corner_profile(
     med_thresh: int = 170
 ) -> Dict[str, int]:
     """
-    Detect corners and categorize by entry speed; estimate chicanes.
-
-    Args:
-        session: Loaded FastF1 session.
-        low_thresh: Max speed for slow corners (km/h).
-        med_thresh: Max speed for medium corners (km/h).
-
-    Returns:
-        Dict with slow_corners, medium_corners, fast_corners, chicanes.
-
-    Raises:
-        ValueError: If extraction fails.
-    """
+    Analyze circuit layout by classifying corners by entry speed.
     
+    Uses spatial matching between circuit corner coordinates and telemetry
+    to determine entry speed for each corner, then classifies into
+    slow/medium/fast categories. Also detects chicanes by corner proximity.
+    
+    Algorithm:
+        1. Load fastest lap with valid position data (X,Y coordinates)
+        2. Merge positional data with speed telemetry via timestamp
+        3. Build KD-tree from telemetry (X,Y) points
+        4. Query tree to map each circuit corner to nearest telemetry point
+        5. Classify corners by speed at matched point
+        6. Detect chicanes: consecutive corners within 100m distance
+    
+    Args:
+        session: Loaded FastF1 session with telemetry and circuit info
+        low_thresh: Maximum speed (km/h) for slow corners (default: 100)
+        med_thresh: Maximum speed (km/h) for medium corners (default: 170)
+    
+    Returns:
+        Dictionary with corner counts:
+        - slow_corners: Count with entry speed < low_thresh
+        - medium_corners: Count with low_thresh ≤ speed < med_thresh
+        - fast_corners: Count with speed ≥ med_thresh
+        - chicanes: Count of corner pairs within 100m
+        
+    Raises:
+        ValueError: If extraction fails or data incomplete
+        
+    Example:
+        >>> profile = get_circuit_corner_profile(session)
+        >>> print(f"Slow corners: {profile['slow_corners']}")
+        
+    Note:
+        - Classification based on entry speed, not apex speed
+        - Chicane detection uses fixed 100m threshold
+    """
     try:
         session.load(telemetry=True)
         lap = get_valid_lap_with_pos(session)
@@ -248,8 +353,11 @@ def get_circuit_corner_profile(
         name = getattr(session, "name", "Unknown")
         raise ValueError(f"⚠️ Failed to compute corner profile: {event} {name} – {e}")
 
-        
-#  Higher‑level profiling pipelines
+
+# =============================================================================
+# HIGHER-LEVEL PROFILING PIPELINES
+# =============================================================================
+
 def build_profiles_for_season(
     year: int,
     circuit_metadata: pd.DataFrame,
@@ -258,14 +366,39 @@ def build_profiles_for_season(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build circuit-performance profiles for one F1 season.
-
+    
+    Iterates through completed events and sessions, extracting track metrics
+    (speed, corners, chicanes), telemetry features, and weather conditions.
+    
+    Pipeline per session:
+        1. Load session via load_session() (FastF1 or OpenF1 fallback)
+        2. Estimate lap length from telemetry
+        3. Extract track metrics (extract_track_metrics)
+        4. Extract corner profile (get_circuit_corner_profile)
+        5. Extract weather data (get_weather_info)
+        6. Merge with circuit altitude from metadata
+        7. Combine all into single row
+    
     Args:
-        year: Season year.
-        circuit_metadata: DataFrame from get_all_circuits.
-        only_specific: Optional set of (event, session) to process.
-
+        year: F1 championship season year (e.g., 2024)
+        circuit_metadata: DataFrame from get_all_circuits() with altitude data
+        only_specific: Optional filter - set of (event_name, session_code)
+                      tuples to process. Example: {('Monaco GP', 'Q')}
+    
     Returns:
-        Tuple of (profiles_df, skipped_df).
+        Tuple of (profiles_df, skipped_df):
+        - profiles_df: Successfully processed sessions with columns:
+          year, event, location, session, real_altitude, lap_length,
+          telemetry_source, avg_speed, top_speed, braking_events,
+          slow_corners, medium_corners, fast_corners, chicanes,
+          air_temp_avg, track_temp_avg, rain_detected
+        - skipped_df: Failed sessions with columns:
+          year, event, session, reason
+          
+    Example:
+        >>> metadata = get_all_circuits(2024)
+        >>> profiles, skipped = build_profiles_for_season(2024, metadata)
+        >>> print(f"Processed: {len(profiles)}, Failed: {len(skipped)}")
     """
     records: list[dict] = []
     skipped: list[dict] = []
@@ -308,7 +441,8 @@ def build_profiles_for_season(
                 # Estimate lap length
                 if session is not None: # FastF1
                     try:
-                        dist = fast1_sess.laps.pick_fastest().get_car_data().add_distance()['Distance'].max()
+                        dist = session.laps.pick_fastest().get_car_data().add_distance()['Distance'].max()
+                        lap_len = dist
                     except Exception:
                         lap_len = np.nan
                 else: # OpenF1 fallback
@@ -377,14 +511,22 @@ def _build_circuit_profile_df(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Build circuit profiles over multiple seasons.
-
+    
+    Orchestrates profile generation across years by calling
+    build_profiles_for_season() for each year, then concatenating results.
+    
     Args:
-        start_year: First year (inclusive).
-        end_year: Last year (inclusive).
+        start_year: First year, inclusive (e.g., 2022)
+        end_year: Last year, inclusive (e.g., 2024)
         only_specific: Optional mapping of year to sessions to include.
-
+                      Format: {year: {(event_name, session_code), ...}}
+    
     Returns:
-        Tuple of (all_profiles_df, all_skipped_df).
+        Tuple of (all_profiles_df, all_skipped_df)
+        
+    Example:
+        >>> profiles, skipped = _build_circuit_profile_df(2022, 2024)
+        >>> print(f"Total sessions: {len(profiles)}")
     """
     all_profiles, all_skipped = [], []
 
@@ -427,20 +569,28 @@ def fit_track_clusters(
     n_components: int = 2
 ) -> Tuple[pd.DataFrame, Pipeline]:
     """
-    Cluster tracks based on performance metrics and optionally project via PCA.
-
+    Cluster tracks based on performance metrics with optional PCA projection.
+    
+    Aggregates session-level features per track, scales/imputes data, applies
+    optional PCA, then performs clustering.
+    
     Args:
-        df_profiles: Session-level feature DataFrame.
-        group_cols: Columns defining each track group.
-        feat_cols: Numeric features for clustering (defaults to all numeric).
-        scaler: Preprocessing scaler (default StandardScaler).
-        clusterer: Clustering estimator (default KMeans(n_clusters=5)).
-        do_pca: Whether to include PCA step.
-        n_components: Number of PCA components if used.
-
+        df_profiles: Session-level feature DataFrame
+        group_cols: Columns defining each track group (default: ['event', 'year'])
+        feat_cols: Numeric features for clustering (if None, uses all numeric)
+        scaler: Preprocessing scaler (default: StandardScaler)
+        clusterer: Clustering estimator (default: KMeans(n_clusters=5))
+        do_pca: Whether to include PCA step (default: False)
+        n_components: Number of PCA components if do_pca=True (default: 2)
+    
     Returns:
-        track_profile: DataFrame with cluster labels (and PC coords if PCA).
-        pipeline: Fitted sklearn Pipeline.
+        Tuple of (track_profile_df, fitted_pipeline):
+        - track_profile: DataFrame with cluster labels (and PC coords if PCA)
+        - pipeline: Fitted sklearn Pipeline
+        
+    Example:
+        >>> track_profile, pipeline = fit_track_clusters(profiles, do_pca=True)
+        >>> print(track_profile[['event', 'cluster', 'PC1', 'PC2']].head())
     """
     # Determine features
     feat_cols = feat_cols or df_profiles.select_dtypes(include='number').columns.tolist()
@@ -486,17 +636,24 @@ def plot_cluster_radar(
 ) -> go.Figure:
     """
     Create a radar chart comparing clusters on selected features.
-
-    Args:
-        df_profiles: DataFrame with cluster labels.
-        categories: Features to plot.
-        cluster_col: Column name for clusters.
-        normalize: Whether to scale features to [0,1].
-
-    Returns:
-        Plotly Figure object.
-    """
     
+    Aggregates features by cluster (mean), optionally normalizes to [0,1],
+    then plots each cluster as separate trace on radar chart.
+    
+    Args:
+        df_profiles: DataFrame with cluster labels and feature columns
+        categories: List of feature column names to plot
+        cluster_col: Column name for clusters (default: 'cluster')
+        normalize: If True, scale features to [0,1] (default: True)
+    
+    Returns:
+        Plotly Figure object with radar chart
+        
+    Example:
+        >>> features = ['avg_speed', 'slow_corners', 'chicanes']
+        >>> fig = plot_cluster_radar(track_profile, features)
+        >>> fig.show()
+    """
     # Aggregate mean feature per cluster
     agg = df_profiles.groupby(cluster_col)[categories].mean()
     if normalize:
@@ -521,15 +678,23 @@ def create_pca_for_n_clusters(
     feat_cols: List[str]
 ) -> Tuple[px.scatter, go.Figure]:
     """
-    Perform PCA and KMeans clustering, returning scatter and radar plots.
-
+    Perform PCA and KMeans clustering, return scatter and radar plots.
+    
+    Convenience function combining clustering with PCA visualization
+    and radar chart generation.
+    
     Args:
-        circuits: DataFrame with track metrics and identifiers.
-        clusters: Number of clusters for KMeans.
-        feat_cols: Feature columns for analysis.
-
+        circuits: DataFrame with track metrics and identifiers
+        clusters: Number of clusters for KMeans
+        feat_cols: Feature column names for clustering
+    
     Returns:
-        Tuple of (scatter_plot, radar_plot).
+        Tuple of (scatter_plot, radar_plot)
+        
+    Example:
+        >>> scatter, radar = create_pca_for_n_clusters(profiles, 5, features)
+        >>> scatter.show()
+        >>> radar.show()
     """
     # Fit on per-track metrics
     track_profile, pipeline = fit_track_clusters(

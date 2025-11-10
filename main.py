@@ -34,6 +34,7 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
       1. Build or update circuit profiles
       2. Build or update driver profiles
       3. Build or update driver timing profiles
+      4. Export classifications if session results ready
 
     Args:
         from_year: First season to process (inclusive).
@@ -70,21 +71,40 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
     )
     print(f"✅ Driver timing profiles shape: {df_timing.shape}")
 
-    # 4) Export available classifications if session results are ready
-    print("\n📤 Exporting available classifications (append-only, multi-season)...")
+    # 4) Export classifications (only for current year to save time)
+    print("\n📤 Exporting classifications...\n")
     res_by_season = export_completed_classifications_csv_range(
-        start_year=from_year,   # or args.from_year depending on your variable names
-        end_year=to_year,       # or args.to_year
+        start_year=from_year,
+        end_year=to_year,
         include_sprint=True,
-        up_to_utc=None,         # or a parsed cutoff if you expose a flag
+        up_to_utc=None,
     )
 
     for season, res in sorted(res_by_season.items()):
         print(f"\n  📅 Season {season}")
         for sess_type, r in res.items():
             where = f" ({r.written_path})" if r.written_path else ""
-            print(f"    {sess_type:18s} → {r.status}{where}")
-
+            
+            # Status icons for readability
+            if r.status == "appended":
+                status_icon = "✅"
+                status_text = f"{r.status}{where}"
+            elif r.status == "created":
+                status_icon = "📝"
+                status_text = f"{r.status}{where}"
+            elif r.status == "skipped":
+                status_icon = "ℹ️ "
+                status_text = f"{r.status}{where}"
+            elif r.status == "error":
+                status_icon = "❌"
+                # Show error reason
+                reason = f" - {r.reason}" if r.reason else ""
+                status_text = f"{r.status}{reason}"
+            else:
+                status_icon = "  "
+                status_text = r.status
+                
+            print(f"    {status_icon} {sess_type:18s} → {status_text}")
 
     print("\n🎉 Pipeline complete!")
 
@@ -109,7 +129,6 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
-    # Invoke pipeline with parsed arguments
     run_pipeline(
         from_year=args.from_year,
         to_year=args.to_year,
