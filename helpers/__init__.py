@@ -21,3 +21,6 @@ from .prediction import *
 
 # Validation utilities
 from .validation import *
+
+# Historical features utilities
+from .historical_features import *

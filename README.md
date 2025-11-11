@@ -68,7 +68,8 @@ Predict qualifying positions (P1-P20) based on:
 formula1/
 ├── main.py                     # Data pipeline orchestration
 ├── helpers/
-│   ├── feature_engineering.py  # ⭐ NEW: ML feature extraction
+│   ├── feature_engineering.py  # ML feature extraction
+│   ├── historical_features.py  # Historical performance
 │   ├── general_utils.py        # Session loading, caching
 │   ├── driver_utils.py         # Driver telemetry features
 │   ├── circuit_utils.py        # Circuit profile extraction
@@ -78,10 +79,12 @@ formula1/
 │   ├── circuit/                # Circuit profiles (CSV)
 │   ├── driver_timing/          # Detailed lap telemetry (Parquet)
 │   ├── predictions/ssot/       # Official qualifying results (CSV)
-│   └── processed/              # ⭐ NEW: ML-ready features (CSV)
+│   └── processed/              # ML-ready features (CSV)
+├── features/
+│   └── ml_features_2022_2025.parquet # Historical performance features
 └── EDA/
-    ├── general.ipynb           # Track clustering analysis
-    └── wip.ipynb               # Experimentation notebook
+    ├── 01_general.ipynb           # Track clustering analysis
+    └── 00_wip.ipynb               # Experimentation notebook
 ```
 
 ---
@@ -118,7 +121,7 @@ Output: `data/processed/qualifying_features.csv` (1,353 rows × 36 features)
 
 ---
 
-## 📈 Feature Engineering Pipeline
+## 4. Feature Engineering Pipeline
 
 The `feature_engineering.py` module transforms raw telemetry into ML-ready features:
 
@@ -156,13 +159,108 @@ The `feature_engineering.py` module transforms raw telemetry into ML-ready featu
 
 ---
 
-## 🎯 Next Steps
+## 5. Historical Features for ML
 
-### Phase 2: Historical Features (In Progress)
-Add temporal features:
-- `driver_track_avg_quali_3yr` - Driver's historical performance at this track
-- `driver_recent_form` - Last 3 race qualifying average
-- `team_season_avg_quali` - Team car performance proxy
+The pipeline now computes historical performance features for machine learning:
+
+### Quick Start
+````bash
+# Compute features for multiple seasons
+python main.py --from 2022 --to 2025
+
+# Skip feature computation for faster runs
+python main.py --from 2024 --to 2024 --no-features
+````
+
+### Features Computed
+
+**Circuit History** (3-year lookback)
+- Average qualifying position at each circuit
+- Best position at circuit
+- Consistency (standard deviation)
+
+**Recent Form** (5-race rolling window)
+- Rolling average position
+- Best recent position
+- Momentum trend (negative = improving)
+
+**Weather Performance**
+- Average position in dry conditions
+- Average position in wet conditions  
+- Wet-dry delta (negative = better in rain)
+
+**Team Performance**
+- Team average at each circuit
+- Team development momentum
+
+### Output
+````
+data/features/ml_features_2022_2025.parquet
+````
+
+**Shape:** ~4,200 driver-sessions × 42 features
+
+**Columns:**
+- Base: year, event, session, driver, team
+- Telemetry: throttle, braking, DRS, tire degradation
+- Weather: rainfall, track temp, air temp
+- **Historical**: circuit history, recent form, momentum
+- **Targets**: qualifying_position, race_position
+
+### Feature Quality
+````
+Missing data by feature:
+  circuit_avg_position    : 27.5% (expected - new circuits/drivers)
+  recent_avg_position     :  0.0% ✅
+  form_trend              :  0.0% ✅
+  wet_dry_delta           :  1.6% ✅
+  team_circuit_avg_pos    : 10.1%
+  team_momentum           :  1.2% ✅
+````
+
+### Usage in ML
+````python
+import pandas as pd
+
+# Load features
+df = pd.read_parquet('data/features/ml_features_2022_2025.parquet')
+
+# Filter to qualifying sessions
+df_qual = df[df['qualifying_position'].notna()]
+
+# Features for modeling
+features = [
+    'circuit_avg_position',
+    'recent_avg_position', 
+    'form_trend',
+    'wet_dry_delta',
+    'team_circuit_avg_position',
+    'max_throttle_ratio',
+    'avg_rainfall'
+]
+
+X = df_qual[features]
+y = df_qual['qualifying_position']
+````
+
+### Configuration
+
+Customize in `main.py` → `compute_historical_features()`:
+````python
+features_df = compute_historical_features(
+    driver_profiles=df_driver,
+    circuit_profiles=df_circuit,
+    lookback_years=3,      # Years of circuit history
+    form_window=5,         # Races for recent form
+    rain_threshold=0.1,    # mm/h for "wet" classification
+    start_year=2022,
+    end_year=2025
+)
+````
+
+---
+
+## 5. Next Steps
 
 ### Phase 3: Baseline Models
 Establish performance targets:
@@ -184,7 +282,7 @@ Train predictive models:
 
 ---
 
-## 📊 Sample Data
+## 6. Sample Data
 
 ### Verstappen's 2024 Performance
 ```python
@@ -198,7 +296,7 @@ print(ver_2024[['event', 'qualifying_position', 'best_throttle_ratio', 'is_sprin
 **Best qualifying:** Australia (P1, throttle 0.787)  
 **Worst qualifying:** São Paulo (P12, sprint weekend)
 
-## 🖥️ Feature Engineering - Command-Line Usage
+## 7. Feature Engineering - Command-Line Usage
 
 ### Basic Usage
 ```bash
@@ -224,7 +322,7 @@ python helpers/feature_engineering.py --show-summary
 python helpers/feature_engineering.py --quiet
 ```
 
-## 🧪 Testing
+## 8. Testing
 
 Run unit tests:
 ```bash
@@ -242,7 +340,7 @@ python helpers/feature_engineering.py --help
 
 ---
 
-## 🛠️ Technical Notes
+## 9. Technical Notes
 
 ### Data Quality
 - **Missing circuit data:** 119 rows (2023 Abu Dhabi) imputed from 2022/2024
@@ -262,7 +360,7 @@ python helpers/feature_engineering.py --help
 
 ---
 
-## 📚 Resources
+## 10. Resources
 
 - **FastF1 Documentation:** https://docs.fastf1.dev/
 - **F1 Technical Regulations:** https://www.fia.com/regulation/category/110
@@ -270,7 +368,7 @@ python helpers/feature_engineering.py --help
 
 ---
 
-## 🤝 Contributing
+## 11. Contributing
 
 This is a learning project, but suggestions welcome! Areas for improvement:
 - Better weather feature engineering
@@ -280,13 +378,13 @@ This is a learning project, but suggestions welcome! Areas for improvement:
 
 ---
 
-## 📄 License
+## 12. License
 
 MIT License - feel free to learn from and build upon this work.
 
 ---
 
-## Acknowledgements
+## 13. Acknowledgements
 
 - [Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) — Formula Data Analysis inspiration
 - **FastF1** — telemetry and timing data
@@ -295,7 +393,7 @@ MIT License - feel free to learn from and build upon this work.
 
 ---
 
-## Contact
+## 14. Contact
 
 For help customizing or extending this project:
 
@@ -304,5 +402,5 @@ For help customizing or extending this project:
 
 ---
 
-*Last updated: November 8, 2025*
-**Status:** Feature engineering complete, baseline modeling next
+**Last updated: November 11, 2025**
+**Status:** Feature engineering complete, historical performance added, baseline modeling next

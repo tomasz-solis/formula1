@@ -2,7 +2,7 @@
 Entrypoint for the F1 data pipeline:
   - Sets up FastF1 cache
   - Parses CLI arguments for seasons and GP filter
-  - Invokes run_pipeline to build profiles
+  - Invokes run_pipeline to build profiles and features
 """
 
 import argparse
@@ -12,6 +12,7 @@ import warnings
 from datetime import datetime, timezone
 from helpers.general_utils import load_or_build_profiles
 from helpers.prediction import export_completed_classifications_csv_range
+from helpers.historical_features import compute_historical_features
 
 # Suppress deprecated dtype warnings when setting LapStartTime
 warnings.filterwarnings(
@@ -26,7 +27,12 @@ os.makedirs(cache_dir, exist_ok=True)
 ff1.Cache.enable_cache(cache_dir)
 
 
-def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> None:
+def run_pipeline(
+    from_year: int,
+    to_year: int,
+    gp_name: str | None = None,
+    build_features: bool = True
+) -> None:
     """
     Run the full F1 data-processing pipeline over a range of seasons.
 
@@ -34,12 +40,14 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
       1. Build or update circuit profiles
       2. Build or update driver profiles
       3. Build or update driver timing profiles
-      4. Export classifications if session results ready
+      4. Export classifications (append-only, all seasons)
+      5. Compute historical features for ML (optional)
 
     Args:
         from_year: First season to process (inclusive).
         to_year: Last season to process (inclusive).
         gp_name: If specified, only build circuit profiles for this Grand Prix.
+        build_features: If True, compute historical features after profiles (default: True)
     """
     print(f"🏁 Running pipeline from {from_year} to {to_year}")
 
@@ -71,8 +79,8 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
     )
     print(f"✅ Driver timing profiles shape: {df_timing.shape}")
 
-    # 4) Export classifications (only for current year to save time)
-    print("\n📤 Exporting classifications...\n")
+    # 4) Export classifications (append-only for ALL seasons)
+    print("\n📤 Exporting classifications (append-only, all seasons)...\n")
     res_by_season = export_completed_classifications_csv_range(
         start_year=from_year,
         end_year=to_year,
@@ -88,23 +96,79 @@ def run_pipeline(from_year: int, to_year: int, gp_name: str | None = None) -> No
             # Status icons for readability
             if r.status == "appended":
                 status_icon = "✅"
-                status_text = f"{r.status}{where}"
             elif r.status == "created":
                 status_icon = "📝"
-                status_text = f"{r.status}{where}"
             elif r.status == "skipped":
                 status_icon = "ℹ️ "
-                status_text = f"{r.status}{where}"
             elif r.status == "error":
                 status_icon = "❌"
                 # Show error reason
                 reason = f" - {r.reason}" if r.reason else ""
-                status_text = f"{r.status}{reason}"
+                where = reason
             else:
                 status_icon = "  "
-                status_text = r.status
                 
-            print(f"    {status_icon} {sess_type:18s} → {status_text}")
+            print(f"    {status_icon} {sess_type:18s} → {r.status}{where}")
+
+    # 5) Compute historical features (optional)
+    if build_features:
+        print("\n🔮 Computing historical features for ML...")
+        
+        try:
+            features_df = compute_historical_features(
+                driver_profiles=df_driver,
+                circuit_profiles=df_circuit,
+                lookback_years=3,
+                form_window=5,
+                rain_threshold=0.1,
+                start_year=from_year,  
+                end_year=to_year 
+            )
+            
+            # Save to cache
+            features_dir = "data/features"
+            os.makedirs(features_dir, exist_ok=True)
+            
+            features_file = os.path.join(
+                features_dir,
+                f"ml_features_{from_year}_{to_year}.parquet"
+            )
+            
+            features_df.to_parquet(
+                features_file,
+                engine='pyarrow',
+                compression='snappy',
+                index=False
+            )
+            
+            print(f"✅ Historical features shape: {features_df.shape}")
+            print(f"💾 Saved to: {features_file}")
+            
+            # Print feature summary
+            print("\n📊 Feature Summary:")
+            historical_cols = [
+                'circuit_avg_position', 'circuit_best_position',
+                'recent_avg_position', 'form_trend',
+                'wet_dry_delta', 'team_circuit_avg_position',
+                'team_momentum'
+            ]
+            
+            available_features = [col for col in historical_cols if col in features_df.columns]
+            
+            print(f"   Total columns: {len(features_df.columns)}")
+            print(f"   Historical features: {len(available_features)}")
+            print(f"   Sample size: {len(features_df):,} driver-sessions")
+            
+            # Show missingness
+            missing_pct = features_df[available_features].isnull().mean() * 100
+            print("\n   Missing data by feature:")
+            for feat, pct in missing_pct.items():
+                if pct > 0:
+                    print(f"     {feat:30s}: {pct:5.1f}%")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to compute historical features: {e}")
+            print("   Continuing without features...")
 
     print("\n🎉 Pipeline complete!")
 
@@ -127,10 +191,15 @@ if __name__ == "__main__":
         "--gp", dest="gp_name", type=str, default=None,
         help="Optional Grand Prix name to filter circuit profiles."
     )
+    parser.add_argument(
+        "--no-features", dest="build_features", action="store_false",
+        help="Skip historical feature computation (faster for data-only runs)."
+    )
 
     args = parser.parse_args()
     run_pipeline(
         from_year=args.from_year,
         to_year=args.to_year,
-        gp_name=args.gp_name
+        gp_name=args.gp_name,
+        build_features=args.build_features
     )
