@@ -260,67 +260,149 @@ features_df = compute_historical_features(
 
 ---
 
-## 5. Next Steps
+## 6. ML Analysis Notebooks
 
-### Phase 3: Baseline Models
-Establish performance targets:
-- Baseline 1: Always predict median (10.5)
-- Baseline 2: Predict driver's last 3 race average
-- **Target to beat:** MAE < 3.5 positions
+Interactive Jupyter notebooks for complete machine learning workflow.
 
-### Phase 4: Machine Learning
-Train predictive models:
-- Linear Regression (interpretable)
-- Random Forest (handles non-linearity)
-- Ridge Regression (regularization)
-- **Goal:** MAE < 2.8 positions (20% improvement over baseline)
+### Notebooks Overview
 
-### Phase 5: Model Evaluation
-- Error analysis by track type, driver, team
-- Feature importance visualization
-- Failure mode investigation
+#### **`EDA/02_feature_exploration.ipynb`** - Exploratory Data Analysis
+Comprehensive analysis of ML-ready features:
+- Dataset overview (810K+ driver-sessions across 4 seasons)
+- Feature distributions by category (telemetry, historical, weather)
+- Missing data analysis and validation
+- Correlation analysis with target variables
+- Historical feature effectiveness validation
+- Weather impact analysis (rain specialists identification)
+- Team performance trends over time
+
+**Visualizations:** 100% Plotly for interactivity (hover, zoom, pan)
 
 ---
 
-## 6. Sample Data
+#### **`EDA/03_feature_importance.ipynb`** - Feature Importance Analysis
+Multi-method feature ranking to identify most predictive features:
 
-### Verstappen's 2024 Performance
+**Methods:**
+1. **F-statistic** - Linear relationships
+2. **Mutual Information** - Non-linear relationships  
+3. **Random Forest** - Tree-based importance
+4. **Permutation Importance** - Model-agnostic impact
+5. **SHAP Values** - Interpretable ML explanations
+
+**Output:** Consolidated ranking averaging 4 different importance methods for robust feature selection.
+
+---
+
+#### **`EDA/04_baseline_ml_model.ipynb`** - Baseline Model Training
+Train and evaluate baseline ML models:
+
+**Models Trained:**
+- **Random Forest** (n_estimators=200, max_depth=15)
+- **XGBoost** (optional, if available)
+- **LightGBM** (optional, if available)
+
+**Train/Test Split:**
+- Train: 2022-2024 seasons
+- Test: 2025 season (time-based split, no data leakage)
+
+**Baseline Performance:**
+```
+Model: Random Forest
+MAE:  3.168 positions
+EMSE: 3.934 positions
+R²:   0.525
+```
+
+**Analysis:**
+- Actual vs predicted scatter plots
+- Error distribution analysis
+- Best/worst predictions identification
+- Error by driver (top teams easier to predict)
+- Error by position (midfield hardest to predict)
+
+**Output:** 
+- Saved model: `models/best_model.pkl`
+- Metadata: `models/model_metadata.json`
+
+---
+
+### Running the Notebooks
+```bash
+# Start Jupyter
+jupyter notebook EDA/
+
+# Or run specific notebook
+jupyter notebook EDA/02_feature_exploration.ipynb
+```
+
+**Run in order:**
+1. `02_feature_exploration.ipynb` - Understand the data
+2. `03_feature_importance.ipynb` - Select best features
+3. `04_baseline_ml_model.ipynb` - Train and evaluate models
+
+**Prerequisites:**
+```bash
+# Ensure ML features exist
+python main.py --from 2022 --to 2025
+
+# Verify file
+ls data/features/ml_features_2022_2025.parquet
+```
+
+**Note:** All visualizations use Plotly - no matplotlib required!
+
+---
+
+### Model Deployment Ready
+
+The trained model from `04_baseline_ml_model.ipynb` is ready for deployment:
 ```python
+import joblib
 import pandas as pd
-df = pd.read_csv('data/processed/qualifying_features.csv')
-ver_2024 = df[(df['driver'] == 'VER') & (df['year'] == 2024)]
 
-print(ver_2024[['event', 'qualifying_position', 'best_throttle_ratio', 'is_sprint_weekend']])
+# Load trained model
+model = joblib.load('models/best_model.pkl')
+
+# Load feature metadata
+import json
+with open('models/model_metadata.json') as f:
+    metadata = json.load(f)
+
+features = metadata['features']  # List of required features
+
+# Make predictions
+X_new = pd.DataFrame([{...}])  # New driver data
+prediction = model.predict(X_new[features])
+print(f"Predicted position: P{int(round(prediction[0]))}")
 ```
 
-**Best qualifying:** Australia (P1, throttle 0.787)  
-**Worst qualifying:** São Paulo (P12, sprint weekend)
+---
 
-## 7. Feature Engineering - Command-Line Usage
+## 7. Development Status
 
-### Basic Usage
-```bash
-# Generate features for 2022-2024 (default)
-python helpers/feature_engineering.py
-```
+### ✅ Completed
+- [x] Data pipeline (driver/circuit/timing profiles)
+- [x] Historical feature engineering
+- [x] Exploratory data analysis
+- [x] Feature importance analysis
+- [x] Baseline ML models (Random Forest, XGBoost, LightGBM)
+- [x] Model evaluation and error analysis
 
-### Advanced Options
-```bash
-# Custom years
-python helpers/feature_engineering.py --years 2023 2024
+### 🔄 In Progress
+- [ ] Hyperparameter tuning
+- [ ] Model ensembling
+- [ ] REST API for predictions
+- [ ] Testing data parser (2026 preseason analysis)
 
-# Custom output path
-python helpers/feature_engineering.py --output data/custom/features.csv
+### 📋 Planned
+- [ ] Deep learning models
+- [ ] Race result prediction (extends beyond qualifying)
+- [ ] Real-time prediction during race weekends
+- [ ] Interactive dashboard
+- [ ] Docker deployment
 
-# Verbose logging
-python helpers/feature_engineering.py --verbose
-
-# Show detailed summary
-python helpers/feature_engineering.py --show-summary
-
-# Quiet mode (only errors)
-python helpers/feature_engineering.py --quiet
-```
+---
 
 ## 8. Testing
 
@@ -402,5 +484,5 @@ For help customizing or extending this project:
 
 ---
 
-**Last updated: November 11, 2025**
-**Status:** Feature engineering complete, historical performance added, baseline modeling next
+**Last updated: November 12, 2025**
+**Status:** Baseline ML models complete.
