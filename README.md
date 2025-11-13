@@ -66,25 +66,37 @@ Predict qualifying positions (P1-P20) based on:
 ## 🏗️ Project Structure
 ```
 formula1/
-├── main.py                     # Data pipeline orchestration
+├── main.py                           # Data pipeline orchestration
 ├── helpers/
-│   ├── feature_engineering.py  # ML feature extraction
-│   ├── historical_features.py  # Historical performance
-│   ├── general_utils.py        # Session loading, caching
-│   ├── driver_utils.py         # Driver telemetry features
-│   ├── circuit_utils.py        # Circuit profile extraction
-│   └── prediction.py           # SSOT classification exports
+│   ├── feature_engineering.py        # ML feature extraction
+│   ├── historical_features.py        # Historical performance
+│   ├── general_utils.py              # Session loading, caching
+│   ├── driver_utils.py               # Driver telemetry features
+│   ├── circuit_utils.py              # Circuit profile extraction
+│   └── prediction.py                 # SSOT classification exports
 ├── data/
-│   ├── driver/                 # Driver session profiles (CSV)
-│   ├── circuit/                # Circuit profiles (CSV)
-│   ├── driver_timing/          # Detailed lap telemetry (Parquet)
-│   ├── predictions/ssot/       # Official qualifying results (CSV)
-│   └── processed/              # ML-ready features (CSV)
+│   ├── driver/                       # Driver session profiles (CSV)
+│   ├── circuit/                      # Circuit profiles (CSV)
+│   ├── driver_timing/                # Detailed lap telemetry (Parquet)
+│   ├── predictions/ssot/             # Official qualifying results (CSV)
+│   └── processed/                    # ML-ready features (CSV)
 ├── features/
 │   └── ml_features_2022_2025.parquet # Historical performance features
-└── EDA/
-    ├── 01_general.ipynb           # Track clustering analysis
-    └── 00_wip.ipynb               # Experimentation notebook
+├── models/
+│   ├── best_model.pkl                # Trained Random Forest (MAE 3.168)
+│   └── model_metadata.json           # Feature list and metrics
+├── EDA/
+│   ├── 00_wip.ipynb                  # Experimentation notebook
+│   ├── 01_general.ipynb              # Track clustering analysis
+│   ├── 02_feature_exploration.ipynb  # EDA with Plotly visualizations
+│   ├── 02_feature_importance.ipynb   # Multi-method feature ranking (F-stat, MI, RF, SHAP)
+│   └── 04_baseline_ml_model.ipynb    # Baseline models (RF/XGBoost/LightGBM)
+└── api/
+    ├── __init__.py             # Package initialization
+    ├── config.py               # API configuration and paths
+    ├── main.py                 # FastAPI application with endpoints
+    ├── models.py               # Pydantic request/response schemas
+    └── predictor.py            # Prediction logic and feature engineering
 ```
 
 ---
@@ -379,32 +391,428 @@ print(f"Predicted position: P{int(round(prediction[0]))}")
 
 ---
 
-## 7. Development Status
+## 7. Prediction API
 
-### ✅ Completed
-- [x] Data pipeline (driver/circuit/timing profiles)
-- [x] Historical feature engineering
-- [x] Exploratory data analysis
-- [x] Feature importance analysis
-- [x] Baseline ML models (Random Forest, XGBoost, LightGBM)
-- [x] Model evaluation and error analysis
+A REST API for predicting qualifying positions in real-time.
 
-### 🔄 In Progress
-- [ ] Hyperparameter tuning
-- [ ] Model ensembling
-- [ ] REST API for predictions
-- [ ] Testing data parser (2026 preseason analysis)
+### What it does
 
-### 📋 Planned
-- [ ] Deep learning models
-- [ ] Race result prediction (extends beyond qualifying)
-- [ ] Real-time prediction during race weekends
-- [ ] Interactive dashboard
-- [ ] Docker deployment
+The API takes basic information (driver, circuit, weather) and returns a predicted qualifying position using the trained ML model. It automatically looks up historical performance data and combines it with current conditions.
+
+### Quick start
+
+Start the API server:
+```bash
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open your browser to `http://localhost:8000/docs` for interactive documentation.
+
+### Making a prediction
+
+**Using the interactive docs:**
+
+1. Go to `http://localhost:8000/docs`
+2. Click on `POST /predict`
+3. Click "Try it out"
+4. Fill in the form:
+```json
+   {
+     "driver": "VER",
+     "circuit": "Monza",
+     "year": 2025
+   }
+```
+5. Click "Execute"
+
+**Using curl:**
+```bash
+curl -X POST "http://localhost:8000/predict" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "driver": "VER",
+    "circuit": "Monza",
+    "year": 2025,
+    "avg_rainfall": 0.0,
+    "avg_track_temp": 35.0
+  }'
+```
+
+**Using Python:**
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:8000/predict",
+    json={
+        "driver": "VER",
+        "circuit": "Monza",
+        "year": 2025,
+        "avg_rainfall": 0.0,
+        "avg_track_temp": 35.0
+    }
+)
+
+result = response.json()
+print(f"Predicted position: P{result['predicted_position_rounded']}")
+print(f"Confidence: P{result['confidence_interval_lower']:.1f} to P{result['confidence_interval_upper']:.1f}")
+```
+
+### What you get back
+
+The API returns:
+- **Predicted position**: The most likely qualifying result (e.g., P2)
+- **Confidence interval**: Range of likely positions (e.g., P1 to P3)
+- **Features used**: What historical data influenced the prediction
+- **Model accuracy**: How reliable the prediction is (MAE: 3.17 positions)
+
+Example response:
+```json
+{
+  "driver": "VER",
+  "circuit": "Monza",
+  "year": 2025,
+  "predicted_position": 1.8,
+  "predicted_position_rounded": 2,
+  "confidence_interval_lower": 1.2,
+  "confidence_interval_upper": 3.4,
+  "model_name": "Random Forest",
+  "model_mae": 3.168,
+  "features_used": {
+    "circuit_avg_position": 1.5,
+    "recent_avg_position": 2.1,
+    "team_circuit_avg_position": 1.8,
+    "avg_rainfall": 0.0,
+    "avg_track_temp": 35.0
+  }
+}
+```
+
+### Available endpoints
+
+**Health check:**
+```bash
+curl http://localhost:8000/health
+```
+Returns whether the model is loaded and ready.
+
+**Model information:**
+```bash
+curl http://localhost:8000/model/info
+```
+Shows which features the model uses and its accuracy metrics.
+
+**List drivers:**
+```bash
+curl http://localhost:8000/drivers
+```
+Returns all drivers available in the historical data.
+
+**List circuits:**
+```bash
+curl http://localhost:8000/circuits
+```
+Returns all circuits available in the historical data.
+
+### How it works
+
+1. You provide basic information (driver, circuit, optional weather)
+2. API looks up driver's historical performance at that circuit
+3. API looks up driver's recent form (last 5 races)
+4. API looks up team performance at that circuit
+5. Model combines all features to make prediction
+6. Returns predicted position with confidence interval
+
+### Optional weather overrides
+
+If you know specific conditions, you can override the defaults:
+```json
+{
+  "driver": "HAM",
+  "circuit": "Silverstone",
+  "year": 2025,
+  "avg_rainfall": 2.5,        // Wet session
+  "avg_track_temp": 18.0,
+  "avg_air_temp": 15.0,
+  "tyre_age": 0,              // Fresh tires
+  "is_fresh_tyre": true
+}
+```
+
+This is useful for:
+- Predicting how conditions affect performance
+- What-if scenarios (what if it rains?)
+- Comparing driver performance in different conditions
+
+### Missing data handling
+
+If the API doesn't have historical data for a driver/circuit combination:
+- Falls back to median values from all drivers
+- Still makes a prediction but with wider confidence intervals
+- Warns you in the response that historical data is limited
+
+### Requirements
+
+The API needs these files to work:
+- `models/best_model.pkl` - Trained model (generated from notebook 04)
+- `models/model_metadata.json` - Feature list and metrics
+- `data/features/ml_features_2022_2025.parquet` - Historical data for lookups
+
+### Performance
+
+- First request: ~500ms (loading historical data)
+- Subsequent requests: ~50ms (data cached in memory)
+- Memory usage: ~2GB (historical data)
+- Concurrent requests: Supported (async/await)
+
+### Error handling
+
+The API handles common issues gracefully:
+- Unknown driver: Returns list of available drivers
+- Unknown circuit: Returns list of available circuits
+- Invalid year: Suggests valid range
+- Missing historical data: Uses fallback values with warning
+- Model not loaded: Returns 503 Service Unavailable
+
+### Interactive documentation
+
+FastAPI automatically generates interactive docs at:
+- Swagger UI: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+
+These let you:
+- See all available endpoints
+- Try requests directly in your browser
+- View request/response schemas
+- Download OpenAPI specification
+
+No need for Postman or curl - just click and test!
 
 ---
 
-## 8. Testing
+## 8. Development Status
+
+### Completed
+
+**Data Pipeline**
+- Raw telemetry extraction from FastF1 API
+- Circuit profile generation
+- Classification exports (qualifying/race results)
+
+**Feature Engineering**
+- 42 features from telemetry, weather, and historical performance
+- Circuit-specific history (3-year lookback)
+- Recent form tracking (5-race rolling window)
+- Weather-adjusted performance metrics
+- Team momentum indicators
+
+**Analysis & Modeling**
+- Exploratory data analysis with 810K+ driver-sessions
+- Multi-method feature importance analysis
+- Baseline models trained (Random Forest, XGBoost, LightGBM)
+- Model evaluation and error analysis
+- Best model: Random Forest with MAE 3.17 positions, R² 0.525
+
+**Deployment**
+- REST API with FastAPI
+- Automatic feature lookup from historical data
+- Interactive API documentation (Swagger)
+- Prediction endpoints with confidence intervals
+
+### In Progress
+
+**Model Improvements**
+- Hyperparameter tuning with Optuna
+- Ensemble methods (stacking multiple models)
+- Cross-validation for more robust metrics
+
+**API Enhancements**
+- Docker containerization for easy deployment
+- Rate limiting and authentication
+- Batch prediction endpoint
+- WebSocket for live race weekend predictions
+
+### Planned
+
+**Advanced Modeling**
+- Deep learning models (LSTM for sequential patterns)
+- Race result prediction (beyond qualifying)
+- Pit stop strategy optimization
+- Tire degradation forecasting
+
+**Data Sources**
+- Preseason testing data parser (2026 regulation changes)
+- Real-time weather API integration
+- Team radio sentiment analysis
+
+**Deployment**
+- Deploy to Railway/Render/Fly.io
+- CI/CD pipeline with GitHub Actions
+- Monitoring and logging with Sentry
+- Performance metrics dashboard
+
+**User Interface**
+- Interactive Streamlit dashboard
+- Race weekend live predictions
+- Historical performance comparison tool
+- Driver/team analytics visualization
+
+---
+
+## 9. Technical Details
+
+### Data Quality
+
+**Training Data (2022-2024)**
+- 1,353 qualifying sessions
+- Zero missing values after imputation
+- Time-based train/test split (no data leakage)
+
+**Feature Dataset (2022-2025)**
+- 810,305 driver-sessions
+- 42 engineered features
+- 4,217 sessions with position data
+
+**Missing Data Handling**
+- Circuit features: 27.5% missing (new circuits/drivers)
+- Recent form: 0% missing (always computable)
+- Weather features: 1.6% missing (interpolated)
+
+### Model Performance
+
+**Baseline Random Forest**
+- Mean Absolute Error: 3.17 positions
+- Root Mean Squared Error: 3.93 positions
+- R-squared: 0.525
+- 42% of predictions within ±2 positions
+- 67% of predictions within ±3 positions
+
+**What this means:**
+- On average, predictions are off by about 3 positions
+- Stronger performance for top teams (more consistent)
+- Midfield hardest to predict (close competition)
+- Weather conditions increase prediction error
+
+### Reproducibility
+
+**Fixed Elements**
+- Random seed: 42 for all models
+- FastF1 cache: `data/.fastf1_cache/`
+- Deterministic pipeline (same input = same output)
+
+**Version Control**
+- All notebooks include requirements
+- Model versioning in metadata
+- Training date recorded
+
+### Known Limitations
+
+**Current Model**
+- Doesn't account for car development during season
+- Limited wet weather training data
+- No tire strategy modeling
+- Sprint weekend format not fully validated
+
+**Data Sources**
+- FastF1 API has occasional missing sessions
+- Weather data limited to basic metrics
+- No team radio or strategy information
+
+**Predictions**
+- Historical performance assumes consistent regulations
+- 2026 regulation changes will require new features
+- No real-time track condition updates
+- Doesn't predict mechanical failures or penalties
+
+---
+
+## 10. Installation & Setup
+
+### System Requirements
+- Python 3.11+
+- 8GB RAM minimum (16GB recommended for full pipeline)
+- 10GB free disk space (for FastF1 cache)
+- Internet connection (for FastF1 API)
+
+### Installation
+
+Clone and setup:
+```bash
+git clone https://github.com/tomasz-solis/formula1.git
+cd formula1
+python -m venv f1env
+source f1env/bin/activate  # Windows: f1env\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Configuration
+
+The pipeline uses sensible defaults, but you can customize:
+
+**Historical features** (in `main.py`):
+```python
+compute_historical_features(
+    lookback_years=3,      # Years of circuit history
+    form_window=5,         # Races for recent form
+    rain_threshold=0.1     # mm/h for "wet" classification
+)
+```
+
+**Model training** (in notebook 04):
+```python
+RandomForestRegressor(
+    n_estimators=200,      # Number of trees
+    max_depth=15,          # Tree depth
+    min_samples_split=10   # Min samples to split node
+)
+```
+
+### Running the Pipeline
+
+**Full pipeline** (takes ~15 minutes):
+```bash
+python main.py --from 2022 --to 2025
+```
+
+**Quick profile update** (skip features):
+```bash
+python main.py --from 2025 --to 2025 --no-features
+```
+
+**Single circuit** (for testing):
+```bash
+python main.py --from 2024 --to 2024 --gp "Monaco" --no-features
+```
+
+### Troubleshooting
+
+**XGBoost won't load on macOS:**
+```bash
+brew install libomp
+pip uninstall xgboost
+pip install xgboost --no-cache-dir
+```
+
+**Out of memory during feature computation:**
+- Close other applications
+- Use `--no-features` flag
+- Process fewer years at once
+
+**FastF1 API timeouts:**
+- Check internet connection
+- Retry (pipeline is idempotent)
+- Clear cache if corrupted: `rm -rf data/.fastf1_cache`
+
+**Notebook file too large for Git:**
+```bash
+# Clear outputs before committing
+jupyter nbconvert --clear-output --inplace EDA/*.ipynb
+git add EDA/*.ipynb
+```
+
+---
+
+## 11. Testing
 
 Run unit tests:
 ```bash
@@ -422,27 +830,7 @@ python helpers/feature_engineering.py --help
 
 ---
 
-## 9. Technical Notes
-
-### Data Quality
-- **Missing circuit data:** 119 rows (2023 Abu Dhabi) imputed from 2022/2024
-- **Missing altitude:** Dropped feature (low variance)
-- **Dropped rows:** 68 drivers without qualifying result (DNS/DSQ)
-
-### Reproducibility
-- FastF1 cache: `data/.fastf1_cache/`
-- Deterministic feature engineering (no randomness)
-- Idempotent pipeline (safe to re-run)
-
-### Known Limitations
-- No historical features yet (coming in Phase 2)
-- Sprint qualifying impact not fully validated
-- Weather features basic (only rain detection)
-- No tire strategy modeling
-
----
-
-## 10. Resources
+## 12. Resources
 
 - **FastF1 Documentation:** https://docs.fastf1.dev/
 - **F1 Technical Regulations:** https://www.fia.com/regulation/category/110
@@ -450,7 +838,7 @@ python helpers/feature_engineering.py --help
 
 ---
 
-## 11. Contributing
+## 13. Contributing
 
 This is a learning project, but suggestions welcome! Areas for improvement:
 - Better weather feature engineering
@@ -460,13 +848,13 @@ This is a learning project, but suggestions welcome! Areas for improvement:
 
 ---
 
-## 12. License
+## 14. License
 
 MIT License - feel free to learn from and build upon this work.
 
 ---
 
-## 13. Acknowledgements
+## 15. Acknowledgements
 
 - [Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) — Formula Data Analysis inspiration
 - **FastF1** — telemetry and timing data
@@ -475,7 +863,7 @@ MIT License - feel free to learn from and build upon this work.
 
 ---
 
-## 14. Contact
+## 16. Contact
 
 For help customizing or extending this project:
 
@@ -484,5 +872,6 @@ For help customizing or extending this project:
 
 ---
 
-**Last updated: November 12, 2025**
-**Status:** Baseline ML models complete.
+**Last updated:** November 13, 2025  
+**Status:** REST API complete and ready for deployment  
+**Current model:** Random Forest (MAE: 3.17 positions, R²: 0.525)

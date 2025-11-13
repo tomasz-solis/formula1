@@ -1,0 +1,22 @@
+{
+  "features": [
+    "circuit_avg_position",
+    "circuit_best_position",
+    "recent_avg_position",
+    "recent_best_position",
+    "form_trend",
+    "team_circuit_avg_position",
+    "team_momentum",
+    "max_throttle_ratio",
+    "brake_max_g",
+    "braking_events",
+    "avg_rainfall",
+    "avg_track_temp",
+    "tyre_age",
+    "is_fresh_tyre",
+    "wet_dry_delta"
+  ],
+  "model_name": "Random Forest",
+  "mae": 3.168244295050385,
+  "r2": 0.5251847972877253
+}
