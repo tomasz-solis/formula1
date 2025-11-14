@@ -22,8 +22,18 @@ Date: November 2025
 
 import pandas as pd
 import numpy as np
-from typing import Optional, List, Dict
 from datetime import datetime
+import logging
+from typing import Dict, List, Optional, Tuple
+from .general_utils import merge_driver_features_with_targets
+
+
+# Configure logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(message)s'
+)
 
 
 # =============================================================================
@@ -38,91 +48,74 @@ def compute_circuit_history(
     """
     Compute driver performance history at each circuit.
     
-    For each driver-circuit-year combination, calculates historical performance
-    at that circuit from previous years. Metrics include average finishing
-    position, best result, consistency, and sample size.
-    
-    Algorithm:
-        1. For each driver-circuit-year combo
-        2. Look back N years at same circuit
-        3. Compute avg/best/std of qualifying position
-        4. Count number of historical sessions
-        5. Return as new features
+    Returns average and best qualifying/race positions at each circuit.
     
     Args:
-        driver_profiles: DataFrame with columns:
-            - year, event, session, driver, qualifying_position (or race_position)
-        lookback_years: How many years back to consider (default: 3)
-        min_sessions: Minimum sessions required to compute stats (default: 1)
-    
+        driver_profiles: Driver session data with positions
+        lookback_years: Years of history to consider
+        min_sessions: Minimum sessions required for valid history
+        
     Returns:
-        DataFrame with historical features:
-        - driver, event, year: Identifiers
-        - circuit_avg_position: Mean position at this circuit (previous years)
-        - circuit_best_position: Best position at this circuit
-        - circuit_position_std: Consistency at this circuit (lower = more consistent)
-        - circuit_sessions_count: Number of previous sessions at this circuit
-        
-    Example:
-        >>> history = compute_circuit_history(driver_profiles, lookback_years=3)
-        >>> print(history[history['driver'] == 'VER'].head())
-             driver           event  year  circuit_avg_position  circuit_sessions_count
-        0      VER  Bahrain GP      2024                  2.3                          3
-        1      VER  Monaco GP       2024                  1.0                          3
-        
-    Note:
-        - NaN values mean no historical data at this circuit
-        - Only includes sessions where driver participated
-        - Qualifying and Race sessions weighted equally
+        DataFrame with circuit-specific performance metrics
     """
-    # Prepare data - need position column
-    if 'qualifying_position' in driver_profiles.columns:
-        position_col = 'qualifying_position'
-    elif 'race_position' in driver_profiles.columns:
-        position_col = 'race_position'
-    else:
-        raise ValueError("DataFrame must have 'qualifying_position' or 'race_position'")
+    if 'qualifying_position' not in driver_profiles.columns:
+        raise ValueError("DataFrame must have 'qualifying_position' column")
     
-    # Create copy for manipulation
-    df = driver_profiles[['year', 'event', 'driver', position_col]].copy()
-    df = df.dropna(subset=[position_col])
+    # Filter to sessions with position data
+    valid_data = driver_profiles[
+        driver_profiles['qualifying_position'].notna()
+    ].copy()
     
-    results = []
+    if valid_data.empty:
+        return pd.DataFrame()
     
-    # Group by driver-circuit
-    for (driver, event), group in df.groupby(['driver', 'event']):
-        group = group.sort_values('year')
+    # Build aggregations
+    agg_dict = {
+        'qualifying_position': ['mean', 'min', 'count']
+    }
+    
+    if 'race_position' in valid_data.columns:
+        agg_dict['race_position'] = ['mean', 'min']
+    
+    # Group and aggregate
+    history = valid_data.groupby(
+        ['driver', 'event', 'year'], 
+        as_index=False
+    ).agg(agg_dict)
+    
+    # CRITICAL: Flatten MultiIndex columns properly
+    if isinstance(history.columns, pd.MultiIndex):
+        # Flatten: ('qualifying_position', 'mean') -> 'circuit_avg_position'
+        new_cols = ['driver', 'event', 'year']
         
-        for year in group['year'].unique():
-            # Get historical data (years before current year)
-            historical = group[
-                (group['year'] < year) & 
-                (group['year'] >= year - lookback_years)
-            ]
-            
-            if len(historical) >= min_sessions:
-                results.append({
-                    'driver': driver,
-                    'event': event,
-                    'year': year,
-                    'circuit_avg_position': historical[position_col].mean(),
-                    'circuit_best_position': historical[position_col].min(),
-                    'circuit_position_std': historical[position_col].std(),
-                    'circuit_sessions_count': len(historical)
-                })
-            else:
-                # Not enough historical data
-                results.append({
-                    'driver': driver,
-                    'event': event,
-                    'year': year,
-                    'circuit_avg_position': np.nan,
-                    'circuit_best_position': np.nan,
-                    'circuit_position_std': np.nan,
-                    'circuit_sessions_count': 0
-                })
+        for col in history.columns[3:]:  # Skip driver, event, year
+            if col[0] == 'qualifying_position':
+                if col[1] == 'mean':
+                    new_cols.append('circuit_avg_position')
+                elif col[1] == 'min':
+                    new_cols.append('circuit_best_position')
+                elif col[1] == 'count':
+                    new_cols.append('circuit_sessions')
+            elif col[0] == 'race_position':
+                if col[1] == 'mean':
+                    new_cols.append('circuit_avg_race')
+                elif col[1] == 'min':
+                    new_cols.append('circuit_best_race')
+        
+        history.columns = new_cols
     
-    return pd.DataFrame(results)
+    # Filter minimum sessions
+    if 'circuit_sessions' in history.columns:
+        history = history[history['circuit_sessions'] >= min_sessions]
+    
+    # Verify required columns
+    required = ['driver', 'event', 'year', 'circuit_avg_position']
+    missing = [col for col in required if col not in history.columns]
+    
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+    
+    return history
 
 
 def compute_recent_form(
@@ -427,6 +420,315 @@ def compute_team_momentum(
     
     return pd.DataFrame(results)
 
+# =============================================================================
+# RACE-SPECIFIC PERFORMANCE
+# =============================================================================
+
+def compute_race_pace_vs_quali(
+    driver_profiles: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Compute driver's race pace relative to qualifying pace.
+    
+    Some drivers are better in races (tire management, consistency)
+    vs qualifying (one-lap pace). This captures that difference.
+    
+    Args:
+        driver_profiles: DataFrame with qualifying_position and race_position
+        
+    Returns:
+        DataFrame with race vs quali performance metrics:
+        - driver, year: Identifiers
+        - race_vs_quali_delta: Average position change (negative = gains in race)
+        - race_consistency: Std dev of position changes
+        - races_improved: Count of races where position improved
+        - races_declined: Count of races where position declined
+        
+    Example:
+        >>> pace = compute_race_pace_vs_quali(driver_profiles)
+        >>> strong_racers = pace[pace['race_vs_quali_delta'] < -1]  # Gain positions
+        >>> print(strong_racers[['driver', 'race_vs_quali_delta']])
+    """
+    # Filter to sessions with both quali and race positions
+    df = driver_profiles[
+        driver_profiles['qualifying_position'].notna() &
+        driver_profiles['race_position'].notna()
+    ].copy()
+    
+    if len(df) == 0:
+        return pd.DataFrame()
+    
+    # Calculate position change (race - quali)
+    # Negative = gained positions (better in race)
+    df['position_change'] = df['race_position'] - df['qualifying_position']
+    
+    results = []
+    
+    for (driver, year), group in df.groupby(['driver', 'year']):
+        if len(group) < 3:  # Need at least 3 races for stats
+            continue
+        
+        position_changes = group['position_change'].values
+        
+        results.append({
+            'driver': driver,
+            'year': year,
+            'race_vs_quali_delta': position_changes.mean(),
+            'race_consistency': position_changes.std(),
+            'races_improved': (position_changes < 0).sum(),
+            'races_declined': (position_changes > 0).sum(),
+            'races_maintained': (position_changes == 0).sum(),
+            'best_position_gain': position_changes.min(),
+            'worst_position_loss': position_changes.max(),
+            'races_sampled': len(position_changes)
+        })
+    
+    return pd.DataFrame(results)
+
+
+def compute_overtaking_metrics(
+    driver_profiles: pd.DataFrame,
+    min_races: int = 5
+) -> pd.DataFrame:
+    """
+    Compute driver overtaking and defending capabilities.
+    
+    Measures how often drivers gain positions in races and how well
+    they defend their starting position.
+    
+    Args:
+        driver_profiles: DataFrame with qualifying and race positions
+        min_races: Minimum races to compute metrics (default: 5)
+        
+    Returns:
+        DataFrame with overtaking metrics:
+        - driver, year: Identifiers
+        - avg_positions_gained: Average positions gained per race
+        - overtaking_frequency: Percentage of races where positions gained
+        - avg_positions_lost: Average positions lost per race
+        - defending_success: Percentage of races where position maintained/improved
+        
+    Example:
+        >>> overtaking = compute_overtaking_metrics(driver_profiles)
+        >>> best_overtakers = overtaking.nlargest(10, 'avg_positions_gained')
+        >>> print(best_overtakers[['driver', 'avg_positions_gained']])
+    """
+    df = driver_profiles[
+        driver_profiles['qualifying_position'].notna() &
+        driver_profiles['race_position'].notna()
+    ].copy()
+    
+    if len(df) == 0:
+        return pd.DataFrame()
+    
+    df['position_change'] = df['race_position'] - df['qualifying_position']
+    
+    results = []
+    
+    for (driver, year), group in df.groupby(['driver', 'year']):
+        if len(group) < min_races:
+            continue
+        
+        changes = group['position_change'].values
+        gains = changes[changes < 0]  # Negative = gained positions
+        losses = changes[changes > 0]  # Positive = lost positions
+        
+        results.append({
+            'driver': driver,
+            'year': year,
+            'avg_positions_gained': -gains.mean() if len(gains) > 0 else 0.0,
+            'overtaking_frequency': len(gains) / len(changes),
+            'avg_positions_lost': losses.mean() if len(losses) > 0 else 0.0,
+            'defending_success': len(changes[changes <= 0]) / len(changes),
+            'max_positions_gained': -changes.min() if changes.min() < 0 else 0,
+            'max_positions_lost': changes.max() if changes.max() > 0 else 0
+        })
+    
+    return pd.DataFrame(results)
+
+
+def compute_circuit_overtaking_difficulty(
+    driver_profiles: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Rate circuits by how difficult overtaking is.
+    
+    Analyzes historical data to determine which circuits allow more
+    position changes during races.
+    
+    Args:
+        driver_profiles: DataFrame with qualifying and race positions by circuit
+        
+    Returns:
+        DataFrame with circuit overtaking metrics:
+        - event, year: Identifiers
+        - avg_position_changes: Average |position change| per driver
+        - overtake_frequency: % of drivers who gain/lose positions
+        - top_10_volatility: Position changes in top 10
+        - overtaking_difficulty: 1-10 scale (1=easy, 10=hard)
+        
+    Example:
+        >>> difficulty = compute_circuit_overtaking_difficulty(driver_profiles)
+        >>> hardest = difficulty.nlargest(5, 'overtaking_difficulty')
+        >>> print(hardest[['event', 'overtaking_difficulty']])
+        # Likely shows: Monaco, Singapore, Hungary...
+    """
+    df = driver_profiles[
+        driver_profiles['qualifying_position'].notna() &
+        driver_profiles['race_position'].notna()
+    ].copy()
+    
+    if len(df) == 0:
+        return pd.DataFrame()
+    
+    df['position_change'] = df['race_position'] - df['qualifying_position']
+    df['abs_position_change'] = np.abs(df['position_change'])
+    
+    results = []
+    
+    for (event, year), group in df.groupby(['event', 'year']):
+        if len(group) < 10:  # Need reasonable sample
+            continue
+        
+        changes = group['position_change'].values
+        abs_changes = group['abs_position_change'].values
+        
+        # Focus on top 10 (where overtaking matters most for points)
+        top10 = group[group['qualifying_position'] <= 10]
+        top10_volatility = np.abs(top10['position_change']).mean() if len(top10) > 0 else 0
+        
+        # Overtaking difficulty: inverse of average position changes
+        # More changes = easier overtaking
+        avg_change = abs_changes.mean()
+        
+        # Scale to 1-10 (will normalize later)
+        difficulty = 10 - (avg_change * 2)  # Rough scaling
+        difficulty = max(1, min(10, difficulty))  # Clamp to 1-10
+        
+        results.append({
+            'event': event,
+            'year': year,
+            'avg_position_changes': abs_changes.mean(),
+            'overtake_frequency': (changes != 0).sum() / len(changes),
+            'top_10_volatility': top10_volatility,
+            'overtaking_difficulty': difficulty,
+            'total_position_changes': abs_changes.sum()
+        })
+    
+    df_result = pd.DataFrame(results)
+    
+    # Normalize overtaking_difficulty to 1-10 scale across all circuits
+    if len(df_result) > 0:
+        min_val = df_result['avg_position_changes'].min()
+        max_val = df_result['avg_position_changes'].max()
+        
+        if max_val > min_val:
+            # Invert: more changes = lower difficulty
+            df_result['overtaking_difficulty'] = 10 - (
+                9 * (df_result['avg_position_changes'] - min_val) / (max_val - min_val)
+            )
+    
+    return df_result
+
+
+def compute_dnf_probability(
+    driver_profiles: pd.DataFrame,
+    lookback_races: int = 10
+) -> pd.DataFrame:
+    """
+    Compute probability of Did Not Finish (DNF) for drivers and teams.
+    
+    Args:
+        driver_profiles: DataFrame with race completion data
+        lookback_races: Number of recent races to analyze (default: 10)
+        
+    Returns:
+        DataFrame with DNF probabilities:
+        - driver, year: Identifiers
+        - driver_dnf_rate: Driver's DNF rate
+        - team_dnf_rate: Team's DNF rate
+        - recent_dnf_count: DNFs in last N races
+        - reliability_score: 0-1 (1 = very reliable)
+        
+    Example:
+        >>> dnf = compute_dnf_probability(driver_profiles)
+        >>> unreliable = dnf.nlargest(10, 'driver_dnf_rate')
+        >>> print(unreliable[['driver', 'team', 'driver_dnf_rate']])
+    """
+    # Assume DNF if race_position > 20 or is NaN (but quali position exists)
+    df = driver_profiles[
+        driver_profiles['qualifying_position'].notna()
+    ].copy()
+    
+    if len(df) == 0:
+        return pd.DataFrame()
+    
+    # Mark DNF
+    df['is_dnf'] = (
+        df['race_position'].isna() | 
+        (df['race_position'] > 20)
+    )
+    
+    results = []
+    
+    # Driver DNF rate
+    for (driver, year), group in df.groupby(['driver', 'year']):
+        if len(group) < 3:
+            continue
+        
+        dnf_rate = group['is_dnf'].mean()
+        
+        # Recent DNF rate (last N races)
+        recent = group.tail(lookback_races)
+        recent_dnf_rate = recent['is_dnf'].mean()
+        recent_dnf_count = recent['is_dnf'].sum()
+        
+        results.append({
+            'driver': driver,
+            'year': year,
+            'driver_dnf_rate': dnf_rate,
+            'recent_dnf_count': recent_dnf_count,
+            'recent_dnf_rate': recent_dnf_rate,
+            'races_started': len(group),
+            'races_finished': (~group['is_dnf']).sum(),
+            'reliability_score': 1 - dnf_rate
+        })
+    
+    df_driver_dnf = pd.DataFrame(results)
+    
+    # Team DNF rate
+    if 'team' in df.columns:
+        team_results = []
+        
+        for (team, year), group in df.groupby(['team', 'year']):
+            if len(group) < 5:
+                continue
+            
+            team_results.append({
+                'team': team,
+                'year': year,
+                'team_dnf_rate': group['is_dnf'].mean(),
+                'team_reliability_score': 1 - group['is_dnf'].mean()
+            })
+        
+        df_team_dnf = pd.DataFrame(team_results)
+        
+        # Merge team DNF rate back to driver data
+        if len(df_team_dnf) > 0 and 'team' in df.columns:
+            # Add team info to driver DNF data
+            driver_team_map = df[['driver', 'year', 'team']].drop_duplicates()
+            df_driver_dnf = df_driver_dnf.merge(
+                driver_team_map,
+                on=['driver', 'year'],
+                how='left'
+            )
+            df_driver_dnf = df_driver_dnf.merge(
+                df_team_dnf,
+                on=['team', 'year'],
+                how='left'
+            )
+    
+    return df_driver_dnf
 
 # =============================================================================
 # MAIN FEATURE ENGINEERING FUNCTION
@@ -434,216 +736,300 @@ def compute_team_momentum(
 
 def compute_historical_features(
     driver_profiles: pd.DataFrame,
-    circuit_profiles: Optional[pd.DataFrame] = None,
+    circuit_profiles: pd.DataFrame,
     lookback_years: int = 3,
     form_window: int = 5,
     rain_threshold: float = 0.1,
-    start_year: Optional[int] = None,
-    end_year: Optional[int] = None
+    start_year: int = 2022,
+    end_year: int = 2025,
+    include_race_features: bool = True
 ) -> pd.DataFrame:
     """
     Compute all historical features for ML model training.
     
-    Master function that orchestrates all historical feature computation:
-    - Circuit-specific history
-    - Recent form and momentum
-    - Weather-adjusted performance
-    - Team performance at circuit
-    - Team development trajectory
+    Combines circuit-specific history, recent form, weather performance,
+    team metrics, and optionally race-specific features (overtaking, DNF).
     
     Args:
-        driver_profiles: Main driver dataset with all sessions
-        circuit_profiles: Optional circuit characteristics (track type, etc.)
-        lookback_years: Years of history for circuit features (default: 3)
-        form_window: Races for recent form calculation (default: 5)
-        rain_threshold: Rainfall threshold for wet classification (default: 0.1 mm/h)
-        start_year: First year for merging classification targets (required)
-        end_year: Last year for merging classification targets (required)
-    
+        driver_profiles: Raw driver session data
+        circuit_profiles: Circuit characteristics
+        lookback_years: Years of history for circuit performance
+        form_window: Number of races for recent form
+        rain_threshold: Rainfall threshold for wet sessions (mm/h)
+        start_year: First year to include in output
+        end_year: Last year to include in output
+        include_race_features: Whether to compute race-specific features
+        
     Returns:
-        DataFrame with base data + all historical features merged
-        
-    Example:
-        >>> from helpers.general_utils import load_or_build_profiles
-        >>> drivers, _ = load_or_build_profiles(2022, 2024, 'driver')
-        >>> circuits, _ = load_or_build_profiles(2022, 2024, 'circuit')
-        >>> 
-        >>> features = compute_historical_features(
-        ...     drivers, circuits,
-        ...     start_year=2022, end_year=2024
-        ... )
-        >>> print(features.columns)
-        
-    Note:
-        - Automatically merges with classification targets
-        - Handles missing data (NaN for insufficient history)
-        - All features computed per driver-event-year combination
+        DataFrame with all features merged, ready for ML training
     """
-    from .general_utils import merge_driver_features_with_targets
-    from tqdm import tqdm
+    logger.info("🔮 Computing historical features...")
     
-    if start_year is None or end_year is None:
-        raise ValueError("start_year and end_year are required for merging classification targets")
+    # ========================================================================
+    # STEP 1: Merge with positions
+    # ========================================================================
+
+    driver_with_positions = merge_driver_features_with_targets(
+        driver_profiles,
+        start_year=start_year,
+        end_year=end_year
+    )
     
-    print("🏗️  Computing historical features...")
+    if driver_with_positions.empty:
+        logger.error("❌ No data after merging with positions!")
+        return pd.DataFrame()
+        
+    # Validate position columns
+    has_quali = 'qualifying_position' in driver_with_positions.columns
+    has_race = 'race_position' in driver_with_positions.columns
     
-    # ========== FIX: AGGREGATE DRIVER PROFILES FIRST ==========
-    print("  📊 Aggregating driver profiles to session level...")
+    if not has_quali and not has_race:
+        logger.error("❌ No position columns found!")
+        return driver_with_positions    
     
-    # Define aggregation functions for telemetry/weather features
-    agg_functions = {
-        'max_throttle_ratio': 'mean',
-        'braking_events': 'sum',
-        'brake_max_g': 'max',
-        'brake_avg_g': 'mean',
-        'drs_activations': 'sum',
-        'degradation_slope': 'mean',
-        'tyre_age': 'max',
-        'is_fresh_tyre': 'max',
-        'avg_rainfall': 'mean',
-        'avg_track_temp': 'mean',
-        'avg_air_temp': 'mean',
-        'team': 'first',
-        'compound': 'first',
-        'session_date': 'first',
-    }
-    
-    # Only aggregate columns that exist
-    agg_dict = {k: v for k, v in agg_functions.items() if k in driver_profiles.columns}
-    
-    # Aggregate to one row per (year, event, driver, session)
-    df_driver_agg = driver_profiles.groupby(
-        ['year', 'event', 'driver', 'session'],
-        as_index=False
+    # ========================================================================
+    # STEP 2: AGGREGATE: Reduce to ONE ROW per (year, event, driver, session)
+    # ========================================================================
+
+    initial_rows = len(driver_with_positions)
+
+    # Define aggregation groups
+    group_keys = ['year', 'event', 'driver']
+    if 'session' in driver_with_positions.columns:
+        group_keys.append('session')
+
+    # Build aggregation dictionary
+    agg_dict = {}
+
+    # Preserve these columns with 'first' (should be same within group)
+    preserve_cols = ['team', 'session_date', 'qualifying_position', 'race_position', 'event']
+    for col in preserve_cols:
+        if col in driver_with_positions.columns and col not in group_keys:
+            agg_dict[col] = 'first'
+
+    # Average all numeric columns not already handled
+    numeric_cols = driver_with_positions.select_dtypes(include=[np.number]).columns
+    for col in numeric_cols:
+        # Skip if already in preserve_cols or group_keys
+        if col not in group_keys and col not in agg_dict and col not in ['year']:
+            agg_dict[col] = 'mean'
+
+    # Perform aggregation
+    driver_with_positions = driver_with_positions.groupby(
+        group_keys, 
+        as_index=False,
+        dropna=False
     ).agg(agg_dict)
+
+    final_rows = len(driver_with_positions)
+
+    # Verify critical columns
+    missing = []
+    for col in ['session_date', 'team']:
+        if col not in driver_with_positions.columns:
+            missing.append(col)
+
+    if missing:
+        logger.error(f"❌ Missing columns after aggregation: {missing}")
+        return pd.DataFrame()
+    else:
+        logger.info(f"✅ All critical columns preserved")
+
+    if final_rows == 0:
+        logger.error("❌ No rows after aggregation!")
+        return pd.DataFrame()
     
-    print(f"     Before aggregation: {len(driver_profiles):,} rows")
-    print(f"     After aggregation: {len(df_driver_agg):,} rows")
+    # ========================================================================
+    # STEP 3: INITIALIZE ALL FEATURE VARIABLES (prevents UnboundLocalError)
+    # ========================================================================
+    circuit_history = pd.DataFrame()
+    recent_form = pd.DataFrame()
+    weather_perf = pd.DataFrame()
+    team_circuit = pd.DataFrame()
+    team_momentum = pd.DataFrame()
+    race_pace = pd.DataFrame()
+    overtaking = pd.DataFrame()
+    circuit_overtaking = pd.DataFrame()
+    dnf_prob = pd.DataFrame()
     
-    # Use aggregated data
-    driver_profiles = df_driver_agg
-    # ========== END FIX ==========
+    # ========================================================================
+    # STEP 4: Compute features (with error handling)
+    # ========================================================================
+    try:
+        circuit_history = compute_circuit_history(
+            driver_with_positions,
+            lookback_years=lookback_years
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to compute circuit history: {e}")
     
-    # STEP 0: Merge driver features with classification targets
-    print("  🔗 Merging features with targets...")
-    merged_data = merge_driver_features_with_targets(driver_profiles, start_year, end_year)
+    try:
+        recent_form = compute_recent_form(
+            driver_with_positions,
+            window_size=form_window
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to compute recent form: {e}")
     
-    print(f"   Loaded {len(merged_data):,} classification records")
-    print(f"   Merged dataset: {merged_data.shape}")
+    try:
+        weather_perf = compute_weather_performance(
+            driver_with_positions,
+            rain_threshold=rain_threshold
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to compute weather performance: {e}")
     
-    # ========== VALIDATE: Check for duplicates ==========
-    duplicate_keys = merged_data.duplicated(
-        subset=['year', 'event', 'driver', 'session'],
-        keep=False
-    )
+    try:
+        team_circuit = compute_team_circuit_performance(
+            driver_with_positions,
+            lookback_years=lookback_years
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to compute team circuit: {e}")
     
-    if duplicate_keys.any():
-        n_dupes = duplicate_keys.sum()
-        print(f"   ⚠️  WARNING: {n_dupes} duplicate rows detected after merge!")
+    try:
+        team_momentum = compute_team_momentum(
+            driver_with_positions,
+            window_size=form_window
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to compute team momentum: {e}")
+    
+    # Race-specific features
+    if include_race_features and has_race:        
+        try:
+            race_pace = compute_race_pace_vs_quali(driver_with_positions)
+        except Exception as e:
+            logger.warning(f"❌ Race pace failed: {e}")
         
-        # De-duplicate by keeping first occurrence
-        merged_data = merged_data.drop_duplicates(
-            subset=['year', 'event', 'driver', 'session'],
-            keep='first'
-        )
-        print(f"   ✅ Deduplicated: {len(merged_data):,} rows")
-    # ========== END VALIDATION ==========
-    
-    # Filter to only sessions with positions (Q, R, Sprint)
-    data_with_positions = merged_data[
-        merged_data[['qualifying_position', 'race_position']].notna().any(axis=1)
-    ].copy()
-    
-    print(f"   Sessions with positions: {len(data_with_positions):,}")
-    
-    # Count teams
-    if 'team' in data_with_positions.columns:
-        n_teams = data_with_positions['team'].nunique()
-        print(f"   Teams represented: {n_teams}")
-    
-    # Verify no duplicates in filtered data
-    filtered_dupes = data_with_positions.duplicated(
-        subset=['year', 'event', 'driver', 'session']
-    ).sum()
-    
-    if filtered_dupes > 0:
-        print(f"   ⚠️  WARNING: {filtered_dupes} duplicates remain after filtering!")
-        data_with_positions = data_with_positions.drop_duplicates(
-            subset=['year', 'event', 'driver', 'session'],
-            keep='first'
-        )
-        print(f"     Filtered to {len(data_with_positions):,} sessions with position data")
-    
-    # 1. Circuit history
-    print("  📍 Circuit-specific history...")
-    circuit_hist = compute_circuit_history(data_with_positions, lookback_years)
-    
-    # 2. Recent form
-    print("  📈 Recent form and momentum...")
-    recent_form = compute_recent_form(data_with_positions, form_window)
-    
-    # 3. Weather performance
-    print("  🌧️  Weather-adjusted performance...")
-    weather_perf = compute_weather_performance(data_with_positions, rain_threshold)
-    
-    # 4. Team circuit performance
-    print("  🏎️  Team circuit performance...")
-    team_circuit = compute_team_circuit_performance(data_with_positions, lookback_years)
-    
-    # 5. Team momentum
-    print("  📊 Team development momentum...")
-    team_momentum = compute_team_momentum(data_with_positions, form_window)
-    
-    # Merge all features
-    print("  🔗 Merging all features...")
-    
-    # Start with data that has positions
-    features = data_with_positions.copy()
-    
-    # Merge circuit history
-    features = features.merge(
-        circuit_hist,
-        on=['driver', 'event', 'year'],
-        how='left'
-    )
-    
-    # Merge recent form
-    features = features.merge(
-        recent_form,
-        on=['driver', 'event', 'year'],
-        how='left'
-    )
-    
-    # Merge weather performance
-    features = features.merge(
-        weather_perf,
-        on=['driver', 'year'],
-        how='left'
-    )
-    
-    # Merge team features
-    if 'team' in features.columns:
-        features = features.merge(
-            team_circuit,
-            on=['team', 'event', 'year'],
-            how='left'
-        )
+        try:
+            overtaking = compute_overtaking_metrics(driver_with_positions)
+        except Exception as e:
+            logger.warning(f"❌ Overtaking failed: {e}")
         
-        features = features.merge(
-            team_momentum,
-            on=['team', 'event', 'year'],
-            how='left'
-        )
+        try:
+            circuit_overtaking = compute_circuit_overtaking_difficulty(driver_with_positions)
+        except Exception as e:
+            logger.warning(f"❌ Circuit overtaking failed: {e}")
+        
+        try:
+            dnf_prob = compute_dnf_probability(driver_with_positions)
+        except Exception as e:
+            logger.warning(f"❌ DNF probability failed: {e}")
     
-    # Final deduplication check
-    final_dupes = features.duplicated(subset=['year', 'event', 'driver', 'session']).sum()
-    if final_dupes > 0:
-        print(f"   ⚠️  Final deduplication: removing {final_dupes} duplicates...")
-        features = features.drop_duplicates(
-            subset=['year', 'event', 'driver', 'session'],
-            keep='first'
-        )
+    # ========================================================================
+    # STEP 5: Smart merging - different granularities
+    # ========================================================================
+
+    result = driver_with_positions.copy()
+    initial_rows = len(result)
+
+    # 1. EVENT-LEVEL features (year + event + driver)
+    event_level_features = []
+
+    if not circuit_history.empty:
+        event_level_features.append(('circuit_history', circuit_history, ['year', 'event', 'driver']))
+
+    # 2. DRIVER-YEAR features (year + driver)
+    driver_year_features = []
+
+    if not recent_form.empty:
+        driver_year_features.append(('recent_form', recent_form, ['year', 'driver']))
+
+    if not weather_perf.empty:
+        driver_year_features.append(('weather_perf', weather_perf, ['year', 'driver']))
+
+    if not dnf_prob.empty:
+        driver_year_features.append(('dnf_prob', dnf_prob, ['year', 'driver']))
+
+    if not race_pace.empty:
+        driver_year_features.append(('race_pace', race_pace, ['year', 'driver']))
     
-    print(f"✅ Historical features computed: {features.shape}")
+    if not overtaking.empty:
+        driver_year_features.append(('overtaking', overtaking, ['year', 'driver']))
+
+    # 3. CIRCUIT-YEAR features (year + event)
+    circuit_year_features = []
+
+    if not circuit_overtaking.empty:
+        circuit_year_features.append(('circuit_overtaking', circuit_overtaking, ['year', 'event']))
+
+    # 4. TEAM features
+    team_features = []
+
+    if not team_circuit.empty and 'team' in result.columns:
+        team_features.append(('team_circuit', team_circuit, ['team', 'year', 'event']))
+
+    if not team_momentum.empty and 'team' in result.columns:
+        team_features.append(('team_momentum', team_momentum, ['team', 'year']))
+
+    # PERFORM MERGES
+    for name, df, keys in event_level_features:
+        result = result.merge(df, on=keys, how='left', suffixes=('', f'_{name}'))
     
-    return features
+        # Check for 'event' column
+        if 'event' not in result.columns:
+            logger.error(f"❌ 'event' column missing after {name} merge!")
+            raise KeyError(f"'event' column lost after merging {name}")
+        
+        # CRITICAL: Check for explosion
+        if len(result) > initial_rows * 1.1:
+            logger.error(f"❌ Merge explosion detected! {initial_rows:,} → {len(result):,}")
+            result = result.drop_duplicates(subset=['year', 'event', 'driver', 'session'])
+            logger.warning(f"Deduped to: {len(result):,} rows")
+
+    for name, df, keys in driver_year_features:
+        result = result.merge(df, on=keys, how='left', suffixes=('', f'_{name}'))
+        
+        if len(result) > initial_rows * 1.1:
+            logger.error(f"❌ Merge explosion detected! {initial_rows:,} → {len(result):,}")
+            result = result.drop_duplicates(subset=['year', 'event', 'driver', 'session'])
+            logger.warning(f"Deduped to: {len(result):,} rows")
+
+    for name, df, keys in circuit_year_features:
+        result = result.merge(df, on=keys, how='left', suffixes=('', f'_{name}'))
+        
+        if len(result) > initial_rows * 1.1:
+            logger.error(f"❌ Merge explosion detected!")
+            result = result.drop_duplicates(subset=['year', 'event', 'driver', 'session'])
+            logger.warning(f"Deduped to: {len(result):,} rows")
+
+    for name, df, keys in team_features:
+        result = result.merge(df, on=keys, how='left', suffixes=('', f'_{name}'))
+        
+        if len(result) > initial_rows * 1.1:
+            logger.error(f"❌ Merge explosion detected!")
+            result = result.drop_duplicates(subset=['year', 'event', 'driver', 'session'])
+            logger.warning(f"Deduped to: {len(result):,} rows")
+
+    # Circuit profiles (event-level)
+    if not circuit_profiles.empty:
+        circuit_cols = ['event', 'year', 'slow_corner_pct', 'medium_corner_pct', 
+                        'fast_corner_pct', 'total_corners', 'chicanes',
+                        'avg_speed_circuit', 'top_speed_circuit']
+        available_cols = [col for col in circuit_cols if col in circuit_profiles.columns]
+        
+        if len(available_cols) > 2:
+            result = result.merge(
+                circuit_profiles[available_cols].drop_duplicates(),
+                on=['event', 'year'],
+                how='left',
+                suffixes=('', '_circuit')
+            )
+
+    # ========================================================================
+    # STEP 6: Final check
+    # ========================================================================
+    final_rows = len(result)
+    if final_rows != initial_rows:
+        logger.warning(f"⚠️  Row count changed: {initial_rows:,} → {final_rows:,}")
+        
+        # Force dedupe if needed
+        if final_rows > initial_rows * 1.1:
+            logger.error(f"❌ Excessive duplication detected! Deduplicating...")
+            result = result.drop_duplicates(subset=['year', 'event', 'driver', 'session'])
+            logger.warning(f"Deduped to: {len(result):,} rows")
+
+    logger.info(f"✅ Final feature dataset: {result.shape}")
+
+    return result

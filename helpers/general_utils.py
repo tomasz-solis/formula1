@@ -857,143 +857,162 @@ def ensure_year_dir(year: int, subdir: str = "data") -> str:
     return year_path
 
 
-def merge_driver_features_with_targets(
-    driver_profiles: pd.DataFrame,
-    start_year: int,
-    end_year: int
-) -> pd.DataFrame:
+def load_classifications(
+    start_year: int = 2022,
+    end_year: int = 2025
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Merge driver profile features with classification targets.
-    
-    Combines telemetry/weather features from driver profiles with
-    qualifying/race positions from classification CSVs to create
-    complete ML-ready dataset.
-    
-    Pipeline:
-        1. Load all classification CSVs (qualifying + race)
-        2. Merge with driver profiles on (year, event, driver, session)
-        3. Add target columns (qualifying_position, race_position)
-        4. Return unified dataset
+    Load qualifying and race classifications from SSOT files.
     
     Args:
-        driver_profiles: DataFrame from load_or_build_profiles('driver')
-        start_year: First year to load classifications
-        end_year: Last year to load classifications
-    
-    Returns:
-        DataFrame with both features and targets:
-        - All columns from driver_profiles
-        - qualifying_position (for Q sessions)
-        - race_position (for R/Sprint sessions)
+        start_year: First year to load
+        end_year: Last year to load
         
-    Example:
-        >>> drivers, _ = load_or_build_profiles(2022, 2024, 'driver')
-        >>> merged = merge_driver_features_with_targets(drivers, 2022, 2024)
-        >>> print(merged[['driver', 'event', 'session', 'qualifying_position']].head())
+    Returns:
+        Tuple of (qualifying_df, race_df)
     """
-    import glob
-    
-    print("🔗 Merging driver features with classification targets...")
-    
-    classification_dir = 'data/predictions/ssot'
-    
-    # Load all classification files
-    all_classifications = []
+    quali_dfs = []
+    race_dfs = []
     
     for year in range(start_year, end_year + 1):
         # Load qualifying
-        qual_file = os.path.join(classification_dir, f'{year}_qualifying.csv')
-        if os.path.exists(qual_file):
-            qual_df = pd.read_csv(qual_file)
-            qual_df['session'] = 'Qualifying'
-            all_classifications.append(qual_df)
+        quali_file = f'data/predictions/ssot/{year}_qualifying.csv'
+        if os.path.exists(quali_file):
+            df = pd.read_csv(quali_file)
+            quali_dfs.append(df)
         
         # Load race
-        race_file = os.path.join(classification_dir, f'{year}_race.csv')
+        race_file = f'data/predictions/ssot/{year}_race.csv'
         if os.path.exists(race_file):
-            race_df = pd.read_csv(race_file)
-            race_df['session'] = 'Race'
-            all_classifications.append(race_df)
+            df = pd.read_csv(race_file)
+            race_dfs.append(df)
+    
+    quali_df = pd.concat(quali_dfs, ignore_index=True) if quali_dfs else pd.DataFrame()
+    race_df = pd.concat(race_dfs, ignore_index=True) if race_dfs else pd.DataFrame()
+    
+    return quali_df, race_df
+
+
+def merge_driver_features_with_targets(
+    driver_profiles: pd.DataFrame,
+    start_year: int = 2022,
+    end_year: int = 2025
+) -> pd.DataFrame:
+    """
+    Merge driver features with classification targets and session dates.
+    
+    Args:
+        driver_profiles: Raw driver session data
+        start_year: First year to include
+        end_year: Last year to include
         
-        # Load sprint
-        sprint_file = os.path.join(classification_dir, f'{year}_sprint.csv')
-        if os.path.exists(sprint_file):
-            sprint_df = pd.read_csv(sprint_file)
-            sprint_df['session'] = 'Sprint'
-            all_classifications.append(sprint_df)
+    Returns:
+        DataFrame with driver features + position targets + session dates + team
+    """
+    import os
+    import pandas as pd
+    
+    print("🔗 Merging driver features with classification targets...")
+    
+    # Load classifications from SSOT files
+    quali_dfs = []
+    race_dfs = []
+    
+    for year in range(start_year, end_year + 1):
+        quali_file = f'data/predictions/ssot/{year}_qualifying.csv'
+        if os.path.exists(quali_file):
+            quali_dfs.append(pd.read_csv(quali_file))
         
-        # Load sprint qualifying
-        sq_file = os.path.join(classification_dir, f'{year}_sprint_qualifying.csv')
-        if os.path.exists(sq_file):
-            sq_df = pd.read_csv(sq_file)
-            sq_df['session'] = 'Sprint Qualifying'
-            all_classifications.append(sq_df)
+        race_file = f'data/predictions/ssot/{year}_race.csv'
+        if os.path.exists(race_file):
+            race_dfs.append(pd.read_csv(race_file))
     
-    if not all_classifications:
-        raise ValueError("No classification files found. Run classification export first.")
+    quali_df = pd.concat(quali_dfs, ignore_index=True) if quali_dfs else pd.DataFrame()
+    race_df = pd.concat(race_dfs, ignore_index=True) if race_dfs else pd.DataFrame()
     
-    classifications = pd.concat(all_classifications, ignore_index=True)
+    if quali_df.empty and race_df.empty:
+        print("   ⚠️  No classification data found!")
+        return pd.DataFrame()
     
-    print(f"   Loaded {len(classifications):,} classification records")
+    print(f"   Loaded {len(quali_df) + len(race_df):,} classification records")
     
-    # Map session names to match driver_profiles
-    session_map = {
-        'Qualifying': 'Q',
-        'Race': 'R',
-        'Sprint': 'S',
-        'Sprint Qualifying': 'SQ'
-    }
+    # ========================================================================
+    # CRITICAL: Get team from classification data
+    # ========================================================================
+    # Combine qualifying and race to get team information
+    team_lookup = pd.DataFrame()
     
-    # Prepare driver profiles for merge
-    driver_features = driver_profiles.copy()
+    if not quali_df.empty:
+        team_lookup = quali_df[['year', 'event', 'driver', 'team']].drop_duplicates()
     
-    # Map classification session names to driver profile session codes
-    classifications['session_code'] = classifications['session'].map(session_map)
-    
-    # Select columns to merge (INCLUDING TEAM!)
-    merge_cols = ['year', 'event', 'driver', 'session_code']
-    value_cols = []
-    
-    # Add position columns if they exist
-    if 'qualifying_position' in classifications.columns:
-        value_cols.append('qualifying_position')
-    if 'race_position' in classifications.columns:
-        value_cols.append('race_position')
-    
-    # CRITICAL: Keep team from classifications (may be more up-to-date)
-    # But check if driver_profiles already has team
-    if 'team' in classifications.columns:
-        if 'team' not in driver_features.columns:
-            # Driver profiles missing team - use from classifications
-            value_cols.append('team')
+    if not race_df.empty:
+        race_teams = race_df[['year', 'event', 'driver', 'team']].drop_duplicates()
+        if team_lookup.empty:
+            team_lookup = race_teams
         else:
-            # Both have team - prefer driver_profiles (already has it)
-            # Rename classification team to avoid conflict
-            classifications['team_classification'] = classifications['team']
+            # Merge, preferring race data if conflict
+            team_lookup = pd.concat([team_lookup, race_teams]).drop_duplicates(
+                subset=['year', 'event', 'driver'],
+                keep='last'
+            )
     
-    # Merge on year, event, driver, session
-    merged = driver_features.merge(
-        classifications[merge_cols + value_cols],
-        left_on=['year', 'event', 'driver', 'session'],
-        right_on=['year', 'event', 'driver', 'session_code'],
-        how='left'
-    )
+    # Merge team info into driver profiles FIRST
+    if not team_lookup.empty:
+        driver_profiles = driver_profiles.merge(
+            team_lookup,
+            on=['year', 'event', 'driver'],
+            how='left'
+        )
+        print(f"   Added team information")
     
-    # Drop duplicate session_code column
-    merged = merged.drop(columns=['session_code'], errors='ignore')
+    # Now merge positions
+    if not quali_df.empty:
+        driver_profiles = driver_profiles.merge(
+            quali_df[['year', 'event', 'driver', 'qualifying_position']],
+            on=['year', 'event', 'driver'],
+            how='left',
+            suffixes=('', '_quali')
+        )
     
-    # If team is missing from driver_features but exists in classifications, ensure it's present
-    if 'team' not in merged.columns and 'team_classification' in merged.columns:
-        merged['team'] = merged['team_classification']
-        merged = merged.drop(columns=['team_classification'])
+    if not race_df.empty:
+        driver_profiles = driver_profiles.merge(
+            race_df[['year', 'event', 'driver', 'race_position']],
+            on=['year', 'event', 'driver'],
+            how='left',
+            suffixes=('', '_race')
+        )
     
-    print(f"   Merged dataset: {merged.shape}")
-    print(f"   Sessions with positions: {merged[['qualifying_position', 'race_position']].notna().any(axis=1).sum():,}")
+    # Add session dates
+    if 'session_date' not in driver_profiles.columns:
+        print("   📅 Adding session dates...")
+        
+        driver_profiles = driver_profiles.sort_values(['year', 'event'])
+        
+        driver_profiles['event_order'] = driver_profiles.groupby('year')['event'].transform(
+            lambda x: pd.factorize(x, sort=True)[0]
+        )
+        
+        driver_profiles['session_date'] = (
+            pd.to_datetime(driver_profiles['year'].astype(str) + '-01-01') +
+            pd.to_timedelta(driver_profiles['event_order'] * 14, unit='D')
+        )
+        
+        driver_profiles = driver_profiles.drop(columns=['event_order'])
     
-    # Verify team column exists
-    if 'team' in merged.columns:
-        print(f"   Teams represented: {merged['team'].nunique()}")
+    # Summary
+    print(f"   Merged dataset: {driver_profiles.shape}")
+    
+    with_positions = (
+        driver_profiles['qualifying_position'].notna() | 
+        driver_profiles['race_position'].notna()
+    ).sum()
+    
+    print(f"   Sessions with positions: {with_positions:,}")
+    
+    if 'team' in driver_profiles.columns:
+        teams_count = driver_profiles['team'].nunique()
+        print(f"   Teams represented: {teams_count}")
     else:
-        print("   ⚠️  Warning: 'team' column not found in merged data")
+        print(f"   Teams represented: N/A (column missing)")
     
-    return merged
+    return driver_profiles

@@ -6,20 +6,32 @@ Entrypoint for the F1 data pipeline:
 """
 
 import argparse
-import fastf1 as ff1
-import os
+import logging
 import warnings
-from datetime import datetime, timezone
-from helpers.general_utils import load_or_build_profiles
-from helpers.prediction import export_completed_classifications_csv_range
-from helpers.historical_features import compute_historical_features
 
-# Suppress deprecated dtype warnings when setting LapStartTime
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+# Suppress noisy warnings (cache is working, just being verbose)
+logging.getLogger('requests_cache.session').setLevel(logging.ERROR)
+logging.getLogger('ergast_py').setLevel(logging.ERROR)
+
+# Suppress deprecated dtype warnings
 warnings.filterwarnings(
     "ignore",
     category=FutureWarning,
     message=".*Setting an item of incompatible dtype is deprecated.*"
 )
+
+# ============================================================================
+# MAIN IMPORTS
+# ============================================================================
+import fastf1 as ff1
+import os
+from datetime import datetime, timezone
+from helpers.general_utils import load_or_build_profiles
+from helpers.prediction import export_completed_classifications_csv_range
+from helpers.historical_features import compute_historical_features
 
 # Configure FastF1 cache directory
 cache_dir = "data/.fastf1_cache"
