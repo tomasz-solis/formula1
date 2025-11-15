@@ -5,8 +5,8 @@ from pathlib import Path
 
 # Paths
 BASE_DIR = Path(__file__).parent.parent
-MODEL_PATH = BASE_DIR / "models" / "best_model.pkl"
-METADATA_PATH = BASE_DIR / "models" / "model_metadata.json"
+MODEL_PATH = BASE_DIR / "models" / "quali_model.pkl"
+METADATA_PATH = BASE_DIR / "models" / "quali_model_metadata.json"
 DATA_PATH = BASE_DIR / "data" / "features" / "ml_features_2022_2025.parquet"
 
 # API settings
