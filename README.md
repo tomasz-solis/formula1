@@ -2,7 +2,7 @@
 
 A machine learning project to predict F1 qualifying results using practice session telemetry, circuit characteristics, and historical performance data.
 
-**Current Status:** ✅ Feature engineering complete, ready for model training
+**Current Status:** ✅ Data leakage eliminated, qualifying model validated (MAE: 3.17)
 
 ---
 
@@ -90,7 +90,9 @@ formula1/
 │   ├── 01_general.ipynb              # Track clustering analysis
 │   ├── 02_feature_exploration.ipynb  # EDA with Plotly visualizations
 │   ├── 02_feature_importance.ipynb   # Multi-method feature ranking (F-stat, MI, RF, SHAP)
-│   └── 04_baseline_ml_model.ipynb    # Baseline models (RF/XGBoost/LightGBM)
+│   ├── 04_baseline_ml_model.ipynb    # Baseline models (RF/XGBoost/LightGBM)
+│   └── 05_race_prediction_model.ipynb # Race position prediction exploration
+├── check_leakage.py                  # Data leakage detection script
 └── api/
     ├── __init__.py             # Package initialization
     ├── config.py               # API configuration and paths
@@ -183,6 +185,32 @@ python main.py --from 2022 --to 2025
 # Skip feature computation for faster runs
 python main.py --from 2024 --to 2024 --no-features
 ````
+
+### Data Integrity
+
+**Critical Fix: Data Leakage Elimination (Nov 2024)**
+
+The historical features pipeline was completely rewritten to eliminate data leakage that was inflating model performance:
+
+**Issues Identified:**
+1. **Circuit history contamination** - When predicting Monaco 2024 qualifying, circuit averages included Monaco 2024 results
+2. **Recent form leakage** - Form features used earlier races from the same test year to predict later races
+
+**Detection:**
+- `circuit_avg_position` showed perfect 1.000 correlation with actual positions
+- Diagnostic script `check_leakage.py` revealed 95-99% of test samples contaminated
+- Model achieved unrealistic performance (MAE < 1.0) due to essentially copying answers
+
+**Resolution:**
+- Circuit history now strictly excludes current year data
+- Recent form uses only previous years when computing features for test year
+- All 2024 predictions now rely solely on 2022-2023 training data
+- Post-fix correlation: `circuit_avg_position` = 0.552 (realistic)
+
+**Impact:**
+- Honest model performance: MAE 3.17 (from artificially low < 1.0)
+- Test set predictions now genuinely predictive, not contaminated
+- All features validated for proper temporal separation
 
 ### Features Computed
 
@@ -307,7 +335,7 @@ Multi-method feature ranking to identify most predictive features:
 ---
 
 #### **`EDA/04_baseline_ml_model.ipynb`** - Baseline Model Training
-Train and evaluate baseline ML models:
+Train and evaluate baseline ML models: 
 
 **Models Trained:**
 - **Random Forest** (n_estimators=200, max_depth=15)
@@ -598,20 +626,23 @@ No need for Postman or curl - just click and test!
 - Raw telemetry extraction from FastF1 API
 - Circuit profile generation
 - Classification exports (qualifying/race results)
+- **Data leakage detection and prevention**
 
 **Feature Engineering**
 - 42 features from telemetry, weather, and historical performance
-- Circuit-specific history (3-year lookback)
-- Recent form tracking (5-race rolling window)
+- Circuit-specific history (3-year lookback, **leakage-free**)
+- Recent form tracking (5-race rolling window, **leakage-free**)
 - Weather-adjusted performance metrics
 - Team momentum indicators
+- **Temporal validation ensures no future data in training**
 
 **Analysis & Modeling**
 - Exploratory data analysis with 810K+ driver-sessions
 - Multi-method feature importance analysis
 - Baseline models trained (Random Forest, XGBoost, LightGBM)
 - Model evaluation and error analysis
-- Best model: Random Forest with MAE 3.17 positions, R² 0.525
+- **Race prediction exploration (determined qualifying more tractable)**
+- Best qualifying model: Random Forest with MAE 3.17 positions, R² 0.525
 
 **Deployment**
 - REST API with FastAPI
@@ -622,9 +653,10 @@ No need for Postman or curl - just click and test!
 ### In Progress
 
 **Model Improvements**
-- Hyperparameter tuning with Optuna
-- Ensemble methods (stacking multiple models)
+- **Qualifying prediction optimization (target: MAE < 2, top-3 accuracy > 80%)**
+- Feature engineering refinement
 - Cross-validation for more robust metrics
+- Error analysis and failure mode investigation
 
 **API Enhancements**
 - Docker containerization for easy deployment
@@ -634,9 +666,9 @@ No need for Postman or curl - just click and test!
 
 ### Planned
 
-**Advanced Modeling**
+**Advanced Modeling** (after qualifying targets met)
+- Binary race predictions (podium finish, points finish)
 - Deep learning models (LSTM for sequential patterns)
-- Race result prediction (beyond qualifying)
 - Pit stop strategy optimization
 - Tire degradation forecasting
 
@@ -713,7 +745,8 @@ No need for Postman or curl - just click and test!
 - No tire strategy modeling
 - Sprint weekend format not fully validated
 
-**Data Sources**
+**Data Quality** ✅
+- ~~Historical features had data leakage~~ **FIXED: temporal separation enforced**
 - FastF1 API has occasional missing sessions
 - Weather data limited to basic metrics
 - No team radio or strategy information
@@ -872,6 +905,6 @@ For help customizing or extending this project:
 
 ---
 
-**Last updated:** November 13, 2025  
-**Status:** REST API complete and ready for deployment  
+**Last updated:** November 16, 2025  
+**Status:** Data leakage eliminated, focusing on qualifying prediction optimization  
 **Current model:** Random Forest (MAE: 3.17 positions, R²: 0.525)

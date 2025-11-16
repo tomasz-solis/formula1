@@ -551,6 +551,163 @@ def merge_with_qualifying_results(
     return merged
 
 
+def compute_circuit_overtaking_features(
+    df: pd.DataFrame,
+    lookback_years: int = 3
+) -> pd.DataFrame:
+    """
+    Compute circuit-specific overtaking difficulty metrics.
+    
+    For each circuit, computes historical position changes to identify:
+    - Processional tracks (Monaco, Hungary): Low position change
+    - Overtaking tracks (Monza, Spa): High position change
+    
+    This is CRITICAL for race prediction because:
+    - At Monaco: Qualifying ≈ Race (hard to overtake)
+    - At Monza: Many position changes (easy to overtake)
+    
+    Args:
+        df: DataFrame with race and qualifying positions
+        lookback_years: Years of history to use (default: 3)
+        
+    Returns:
+        DataFrame with circuit overtaking metrics per event-year
+        
+    Features created:
+        - circuit_avg_position_change: Mean position change (- = net gains)
+        - circuit_std_position_change: Variability of position changes
+        - circuit_abs_position_change: Average absolute changes (overtaking ease)
+        - circuit_max_gain: Biggest position gain seen historically
+        - circuit_max_loss: Biggest position loss seen historically
+        
+    Example:
+        >>> overtaking = compute_circuit_overtaking_features(df)
+        >>> print(overtaking[overtaking['event'] == 'Monaco Grand Prix'])
+        # circuit_abs_position_change: 1.2 (low - hard to overtake)
+        >>> print(overtaking[overtaking['event'] == 'Italian Grand Prix'])
+        # circuit_abs_position_change: 3.8 (high - easy to overtake)
+    """
+    import pandas as pd
+    
+    # Need both qualifying and race positions
+    df_race = df[
+        (df['qualifying_position'].notna()) & 
+        (df['race_position'].notna())
+    ].copy()
+    
+    if df_race.empty:
+        return pd.DataFrame()
+    
+    # Compute position change
+    df_race['position_change'] = (
+        df_race['race_position'] - df_race['qualifying_position']
+    )
+    
+    results = []
+    
+    # For each circuit-year, compute stats from previous years
+    unique_combos = df_race[['event', 'year']].drop_duplicates()
+    
+    for _, row in unique_combos.iterrows():
+        event = row['event']
+        target_year = row['year']
+        
+        # Get historical data (previous years only, no leakage!)
+        historical = df_race[
+            (df_race['event'] == event) &
+            (df_race['year'] < target_year) &
+            (df_race['year'] >= target_year - lookback_years)
+        ]
+        
+        if len(historical) < 5:  # Need minimum data
+            continue
+        
+        position_changes = historical['position_change']
+        
+        results.append({
+            'event': event,
+            'year': target_year,
+            'circuit_avg_position_change': position_changes.mean(),
+            'circuit_std_position_change': position_changes.std(),
+            'circuit_abs_position_change': position_changes.abs().mean(),
+            'circuit_max_gain': position_changes.min(),  # Most negative = biggest gain
+            'circuit_max_loss': position_changes.max(),  # Most positive = biggest loss
+            'circuit_overtaking_samples': len(historical)
+        })
+    
+    return pd.DataFrame(results)
+
+
+def compute_driver_overtaking_skill(
+    df: pd.DataFrame,
+    lookback_years: int = 3
+) -> pd.DataFrame:
+    """
+    Compute driver-specific overtaking skill.
+    
+    Some drivers are better at overtaking than others. This computes
+    historical average position gains/losses per driver.
+    
+    Args:
+        df: DataFrame with race and qualifying positions
+        lookback_years: Years of history to use
+        
+    Returns:
+        DataFrame with driver overtaking metrics per driver-year
+        
+    Features:
+        - driver_avg_position_change: Average position change (- = gains positions)
+        - driver_overtaking_success_rate: % of races where gained positions
+        - driver_defensive_success_rate: % of races where lost <2 positions
+    """
+    import pandas as pd
+    
+    df_race = df[
+        (df['qualifying_position'].notna()) & 
+        (df['race_position'].notna())
+    ].copy()
+    
+    if df_race.empty:
+        return pd.DataFrame()
+    
+    df_race['position_change'] = (
+        df_race['race_position'] - df_race['qualifying_position']
+    )
+    
+    results = []
+    
+    # For each driver-year
+    unique_combos = df_race[['driver', 'year']].drop_duplicates()
+    
+    for _, row in unique_combos.iterrows():
+        driver = row['driver']
+        target_year = row['year']
+        
+        # Historical data (previous years only)
+        historical = df_race[
+            (df_race['driver'] == driver) &
+            (df_race['year'] < target_year) &
+            (df_race['year'] >= target_year - lookback_years)
+        ]
+        
+        if len(historical) < 3:  # Minimum races
+            continue
+        
+        position_changes = historical['position_change']
+        
+        results.append({
+            'driver': driver,
+            'year': target_year,
+            'driver_avg_position_change': position_changes.mean(),
+            'driver_std_position_change': position_changes.std(),
+            'driver_overtaking_success_rate': (position_changes < 0).mean(),
+            'driver_defensive_success_rate': (position_changes.abs() <= 2).mean(),
+            'driver_overtaking_samples': len(historical)
+        })
+    
+    return pd.DataFrame(results)
+
+
 # =============================================================================
 # FEATURE AGGREGATION FUNCTION
 # =============================================================================

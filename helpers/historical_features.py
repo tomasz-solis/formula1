@@ -464,6 +464,8 @@ def compute_historical_features(
     """
     Compute all historical features for ML (LEAKAGE-FREE VERSION).
     
+    Includes circuit overtaking features and driver overtaking skill!
+    
     🔒 DATA LEAKAGE PREVENTION:
        - Circuit history uses ONLY past years
        - Recent form sorted chronologically
@@ -481,22 +483,13 @@ def compute_historical_features(
         
     Returns:
         DataFrame with all features (no leakage)
-        
-    Example:
-        >>> features = compute_historical_features(
-        ...     driver_profiles,
-        ...     circuit_profiles,
-        ...     lookback_years=3,
-        ...     form_window=5
-        ... )
-        >>> # Monaco 2024 features use:
-        >>> # - circuit_avg: Monaco 2022, 2023 (not 2024) ✅
-        >>> # - recent_form: Last 5 races from 2023 (not 2024) ✅
     """
     logger.info("🔮 Computing historical features...")
     
     # Step 1: Merge with targets
     logger.info("  🎯 Merging driver profiles with classification targets...")
+    
+    from .general_utils import merge_driver_features_with_targets
     
     driver_with_positions = merge_driver_features_with_targets(
         driver_profiles=driver_profiles,
@@ -552,6 +545,10 @@ def compute_historical_features(
     team_circuit = pd.DataFrame()
     team_momentum = pd.DataFrame()
     
+    # Circuit overtaking features
+    circuit_overtaking = pd.DataFrame()
+    driver_overtaking = pd.DataFrame()
+    
     # Step 4: Compute features (with leakage prevention)
     logger.info("  🔒 Computing LEAKAGE-FREE features...")
     
@@ -605,6 +602,30 @@ def compute_historical_features(
     except Exception as e:
         logger.error(f"       ❌ Failed: {e}")
     
+    # Circuit overtaking features
+    try:
+        logger.info("     - Circuit overtaking difficulty...")
+        from helpers.feature_engineering import compute_circuit_overtaking_features
+        circuit_overtaking = compute_circuit_overtaking_features(
+            driver_with_positions,
+            lookback_years=lookback_years
+        )
+        logger.info(f"       ✅ {len(circuit_overtaking):,} rows")
+    except Exception as e:
+        logger.error(f"       ❌ Failed: {e}")
+    
+    # Driver overtaking skill
+    try:
+        logger.info("     - Driver overtaking skill...")
+        from helpers.feature_engineering import compute_driver_overtaking_skill
+        driver_overtaking = compute_driver_overtaking_skill(
+            driver_with_positions,
+            lookback_years=lookback_years
+        )
+        logger.info(f"       ✅ {len(driver_overtaking):,} rows")
+    except Exception as e:
+        logger.error(f"       ❌ Failed: {e}")
+    
     # Step 5: Merge all features
     logger.info("  🔗 Merging all features...")
     
@@ -654,16 +675,53 @@ def compute_historical_features(
         )
         logger.info(f"     ✅ Team momentum merged: {result.shape}")
     
+    # Merge circuit overtaking features
+    if not circuit_overtaking.empty:
+        result = result.merge(
+            circuit_overtaking,
+            on=['event', 'year'],
+            how='left'
+        )
+        logger.info(f"     ✅ Circuit overtaking merged: {result.shape}")
+    
+    # Merge driver overtaking skill
+    if not driver_overtaking.empty:
+        result = result.merge(
+            driver_overtaking,
+            on=['driver', 'year'],
+            how='left'
+        )
+        logger.info(f"     ✅ Driver overtaking skill merged: {result.shape}")
+    
     # Merge circuit profiles
     if not circuit_profiles.empty:
-        circuit_cols = ['event', 'year', 'slow_corner_pct', 'medium_corner_pct', 
-                        'fast_corner_pct', 'total_corners', 'chicanes',
-                        'avg_speed_circuit', 'top_speed_circuit']
+        circuit_cols = ['event', 'year', 'low_pct', 'med_pct', 
+                    'high_pct', 'slow_corners', 'medium_corners', 
+                    'fast_corners', 'chicanes', 'avg_speed', 'top_speed']
+        
         available_cols = [col for col in circuit_cols if col in circuit_profiles.columns]
         
         if len(available_cols) > 2:
+
+            # Get circuit data and rename to standard names
+            circuit_data = circuit_profiles[available_cols].drop_duplicates()
+            
+            # Rename to standard feature names
+            rename_map = {
+                'low_pct': 'slow_corner_pct',
+                'med_pct': 'medium_corner_pct', 
+                'high_pct': 'fast_corner_pct',
+                'slow_corners': 'total_slow_corners',
+                'medium_corners': 'total_medium_corners',
+                'fast_corners': 'total_fast_corners',
+                'avg_speed': 'avg_speed_circuit',
+                'top_speed': 'top_speed_circuit'
+            }
+            
+            circuit_data = circuit_data.rename(columns=rename_map)
+
             result = result.merge(
-                circuit_profiles[available_cols].drop_duplicates(),
+                circuit_data,
                 on=['event', 'year'],
                 how='left'
             )
@@ -674,5 +732,7 @@ def compute_historical_features(
     logger.info(f"   - Circuit history uses ONLY past years")
     logger.info(f"   - Recent form chronologically ordered")
     logger.info(f"   - No test data used in feature computation")
+    logger.info(f"   - Circuit overtaking features added")
+    logger.info(f"   - Driver overtaking skill added")
     
     return result
