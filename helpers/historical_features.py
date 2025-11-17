@@ -668,12 +668,21 @@ def compute_historical_features(
         logger.info(f"     ✅ Team circuit merged: {result.shape}")
     
     if not team_momentum.empty and 'team' in result.columns:
+        # ✅ FIX: Deduplicate team_momentum (can have multiple rows per team-event if multiple drivers)
+        team_momentum_dedup = team_momentum.groupby(
+            ['team', 'year', 'event'], 
+            as_index=False
+        ).agg({
+            'team_momentum': 'mean',      # Average momentum across teammates
+            'team_recent_avg': 'mean'     # Average recent performance
+        })
+        
         result = result.merge(
-            team_momentum,
+            team_momentum_dedup,
             on=['team', 'year', 'event'],
             how='left'
         )
-        logger.info(f"     ✅ Team momentum merged: {result.shape}")
+        logger.info(f"     ✅ Team momentum merged (deduplicated): {result.shape}")
     
     # Merge circuit overtaking features
     if not circuit_overtaking.empty:
@@ -703,8 +712,15 @@ def compute_historical_features(
         
         if len(available_cols) > 2:
 
-            # Get circuit data and rename to standard names
-            circuit_data = circuit_profiles[available_cols].drop_duplicates()
+            # ✅ FIX: Get circuit data and aggregate by event-year (take mean)
+            circuit_data = circuit_profiles[available_cols].copy()
+            
+            # Deduplicate by averaging numeric columns per event-year
+            numeric_cols = [c for c in available_cols if c not in ['event', 'year']]
+            agg_dict = {col: 'mean' for col in numeric_cols}
+            circuit_data = circuit_data.groupby(['event', 'year'], as_index=False).agg(agg_dict)
+            
+            logger.info(f"     🔧 Circuit profiles deduplicated: {circuit_data.shape}")
             
             # Rename to standard feature names
             rename_map = {
@@ -728,6 +744,32 @@ def compute_historical_features(
             logger.info(f"     ✅ Circuit profiles merged: {result.shape}")
     
     logger.info(f"✅ Final feature dataset: {result.shape}")
+    
+    # ✅ FINAL VALIDATION: Check for duplicates
+    base_keys = ['year', 'event', 'driver']
+    final_dups = result.duplicated(subset=base_keys, keep=False).sum()
+    
+    if final_dups > 0:
+        logger.error(f"❌ CRITICAL: {final_dups} duplicates found in final data!")
+        logger.error("Example duplicates:")
+        dup_sample = result[result.duplicated(subset=base_keys, keep=False)][
+            base_keys + ['qualifying_position']
+        ].sort_values(base_keys).head(20)
+        logger.error(f"\n{dup_sample}")
+        
+        # Show which columns vary
+        test_case = dup_sample.iloc[0]
+        test_rows = result[
+            (result['driver'] == test_case['driver']) &
+            (result['event'] == test_case['event']) &
+            (result['year'] == test_case['year'])
+        ]
+        varying = [col for col in test_rows.columns if test_rows[col].nunique() > 1]
+        logger.error(f"Varying columns: {varying}")
+        
+        raise ValueError(f"DUPLICATES IN FINAL DATA: {final_dups} rows!")
+    
+    logger.info(f"✅ No duplicates on {base_keys}")
     logger.info(f"🔒 LEAKAGE-FREE guarantee:")
     logger.info(f"   - Circuit history uses ONLY past years")
     logger.info(f"   - Recent form chronologically ordered")
