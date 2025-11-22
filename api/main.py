@@ -1,22 +1,29 @@
 """
 FastAPI application for F1 qualifying classifications.
+
+WITH DYNAMIC MODEL LOADING - Always uses latest trained version!
 """
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.append(str(Path(__file__).parent.parent))
 
 # Use absolute imports instead of relative imports
-from models import (
+from api.models import (
     PredictionRequest,
     Q3PredictionResponse,
     Top3PredictionResponse,
     Q2PredictionResponse,
-    CombinedPredictionResponse,
     HealthResponse,
     ModelInfoResponse
 )
-from predictor import QualifyingPredictor
-from config import API_TITLE, API_VERSION, API_DESCRIPTION
+from api.predictor import QualifyingPredictor
+from api.config import API_TITLE, API_VERSION, API_DESCRIPTION
+from dynamic_model_loader import get_model_version, get_model_metadata
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize predictor
+# Initialize predictor (will use dynamic loading)
 predictor = None
 
 
@@ -47,22 +54,53 @@ async def startup_event():
     """Load models on startup."""
     global predictor
     try:
-        predictor = QualifyingPredictor()
-        logger.info("✅ Predictor initialized successfully")
+        # Initialize predictor with dynamic loading enabled
+        predictor = QualifyingPredictor(use_dynamic_loading=True)
+        
+        # Get current version
+        version = get_model_version()
+        
+        logger.info(f"✅ Predictor initialized successfully")
+        logger.info(f"📦 Active model version: {version}")
+        logger.info(f"🤖 Dynamic loading: ENABLED")
+        
     except Exception as e:
         logger.error(f"❌ Failed to initialize predictor: {e}")
         raise
 
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    logger.info("👋 Shutting down F1 Predictor API...")
+
+
 @app.get("/", tags=["General"])
 async def root():
     """Root endpoint."""
-    return {
-        "message": "🏎️ F1 Qualifying Classifier API",
-        "version": API_VERSION,
-        "models": ["Q3 Binary", "Top 3 Binary", "Q2 Multi-class"],
-        "docs": "/docs"
-    }
+    try:
+        version = get_model_version()
+        metadata = get_model_metadata()
+        
+        return {
+            "message": "🏎️ F1 Qualifying Classifier API",
+            "version": API_VERSION,
+            "model_version": version,
+            "self_learning": True,
+            "models": ["Q3 Binary", "Top 3 Binary", "Q2 Multi-class"],
+            "accuracies": {
+                name: info.get('accuracy', 0)
+                for name, info in metadata.get('models', {}).items()
+            },
+            "docs": "/docs"
+        }
+    except:
+        return {
+            "message": "🏎️ F1 Qualifying Classifier API",
+            "version": API_VERSION,
+            "models": ["Q3 Binary", "Top 3 Binary", "Q2 Multi-class"],
+            "docs": "/docs"
+        }
 
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
@@ -78,6 +116,9 @@ async def health_check():
             },
             features_count=0
         )
+    
+    # Ensure latest models are loaded
+    predictor.reload_if_needed()
     
     return HealthResponse(
         status="healthy",
@@ -96,7 +137,19 @@ async def get_model_info():
     if not predictor:
         raise HTTPException(status_code=503, detail="Models not loaded")
     
+    # Reload if new version available
+    predictor.reload_if_needed()
+    
     info = predictor.get_model_info()
+    
+    # Add dynamic loading info
+    try:
+        version = get_model_version()
+        info['active_version'] = version
+        info['self_learning'] = True
+    except:
+        pass
+    
     return ModelInfoResponse(**info)
 
 
@@ -122,6 +175,9 @@ async def predict_q3(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
+        # DYNAMIC LOADING: Reload if new version available
+        predictor.reload_if_needed()
+        
         # Extract manual features
         manual_features = {
             'avg_rainfall': request.avg_rainfall,
@@ -178,6 +234,9 @@ async def predict_top3(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
+        # DYNAMIC LOADING: Reload if new version available
+        predictor.reload_if_needed()
+        
         # Extract manual features
         manual_features = {
             'avg_rainfall': request.avg_rainfall,
@@ -234,6 +293,9 @@ async def predict_round(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
+        # DYNAMIC LOADING: Reload if new version available
+        predictor.reload_if_needed()
+        
         # Extract manual features
         manual_features = {
             'avg_rainfall': request.avg_rainfall,
@@ -290,6 +352,9 @@ async def predict_all(request: PredictionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
+        # DYNAMIC LOADING: Reload if new version available
+        predictor.reload_if_needed()
+        
         # Extract manual features
         manual_features = {
             'avg_rainfall': request.avg_rainfall,
@@ -305,11 +370,18 @@ async def predict_all(request: PredictionRequest):
             manual_features=manual_features
         )
         
+        # Get current model version
+        try:
+            version = get_model_version()
+        except:
+            version = "unknown"
+        
         # Format response
         return {
             "driver": request.driver,
             "circuit": request.circuit,
             "year": request.year,
+            "model_version": version,
             "q3": {
                 "will_make_q3": results['q3']['prediction'],
                 "probability": results['q3']['probability'],
@@ -355,3 +427,54 @@ async def list_circuits():
     
     circuits = sorted(predictor.historical_data['event'].unique().tolist())
     return {"circuits": circuits, "count": len(circuits)}
+
+
+# NEW ENDPOINTS for self-learning system
+
+@app.post("/model/reload", tags=["Model"])
+async def force_reload_models():
+    """
+    Force reload of models (useful after manual retrain).
+    
+    Checks for new model version and reloads if available.
+    """
+    if not predictor:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    try:
+        old_version = predictor._current_version if hasattr(predictor, '_current_version') else "unknown"
+        
+        # Force reload
+        predictor.reload_if_needed(force=True)
+        
+        new_version = get_model_version()
+        
+        return {
+            "message": "Models reloaded",
+            "old_version": old_version,
+            "new_version": new_version,
+            "changed": old_version != new_version
+        }
+    except Exception as e:
+        logger.error(f"Reload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Reload failed: {str(e)}")
+
+
+@app.get("/model/version", tags=["Model"])
+async def get_current_version():
+    """Get currently active model version."""
+    try:
+        version = get_model_version()
+        metadata = get_model_metadata()
+        
+        return {
+            "version": version,
+            "timestamp": metadata.get('timestamp'),
+            "accuracies": {
+                name: info.get('accuracy', 0)
+                for name, info in metadata.get('models', {}).items()
+            }
+        }
+    except Exception as e:
+        logger.error(f"Version check failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Version check failed: {str(e)}")

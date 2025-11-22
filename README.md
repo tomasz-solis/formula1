@@ -1,682 +1,333 @@
-# 🏎️ Formula 1 Qualifying Outcome Prediction
+# 🏎️ Formula 1 Qualifying Predictor
 
-A machine learning project to predict F1 qualifying outcomes using practice session telemetry, circuit characteristics, and historical performance data.
+Predicting F1 qualifying outcomes using machine learning. This started as a way to learn ML properly - turns out predicting exact grid positions is basically impossible (chaos theory is real!), but predicting who makes Q3 or podium? That works pretty well.
 
-**Current Status:** ✅ Classification models deployed - Q3: 78.8% accuracy, Top 3: 89.1% accuracy, Round: 70% accuracy
+**Current Models:** Q3: 73% accurate | Top 3: 89% accurate | Round: 78% accurate
 
----
-
-## 🎯 Project Goal
-
-Predict qualifying outcomes based on:
-- Practice session performance (FP1/FP2/FP3)
-- Circuit characteristics (corners, altitude, track layout)
-- Weather conditions
-- Sprint weekend handling
-- Historical driver/team performance
-
-**Why classification over regression:** After discovering that exact position prediction (regression) couldn't beat a naive baseline (MAE 3.78 vs 3.60 baseline), I pivoted to classification tasks that are more tractable and practically useful.
+The system learns from each race weekend automatically - no manual retraining needed.
 
 ---
 
-## 📊 Key Results
+## Why This Project Exists
 
-### Classification Models (Production Ready ✅)
+I'm a senior product analyst trying to move into ML/data science. Instead of just doing Kaggle competitions, I wanted to build something real:
+- Real messy data (missing telemetry, DNS, wet/dry chaos)
+- Real production concerns (APIs, versioning, monitoring)
+- Real failures and pivots (tried regression first, failed spectacularly)
 
-| Model | Task | Baseline | Achieved | Improvement | Status |
-|-------|------|----------|----------|-------------|--------|
-| **Q3 Qualification** | Will driver make top 10? | 50.0% | **78.8%** | **+28.8 pts** | ✅ Production |
-| **Top 3 Finish** | Will driver podium in quali? | 15.0% | **89.1%** | **+74.1 pts** | ✅ Production |
-| **Qualifying Round** | Which round will they reach? | 33.3% | **70.0%** | **+37 pts** | ✅ Production |
-
-### Why Classification Worked
-
-**Problem with Regression:**
-- Predicting exact positions (P1-P20) achieved MAE 3.78
-- Worse than naive baseline (MAE 3.60)
-- Single feature (`recent_avg_position`) dominated with 91% importance
-- Model essentially copied "past = future" without learning patterns
-
-**Success with Classification:**
-- Binary targets (Q3 or not) reduce variance
-- Multi-feature learning: weather-adjusted metrics now 42% importance
-- More actionable predictions ("Will Verstappen make Q3?" vs "Position 3.2")
-- Clear evaluation metrics (accuracy vs ambiguous MAE)
-
-### Model Performance Details
-
-**Q3 Qualification (Top 10)**
-- Accuracy: 78.8% | Precision: 81.3% | Recall: 75.2% | ROC AUC: 87.4%
-- Confusion Matrix (Test): TN=369, FP=78, FN=112, TP=339
-- Top Features: `dry_avg_position` (24.5%), `wet_avg_position` (18.0%), `team_recent_avg` (17.2%)
-
-**Top 3 Finish**
-- Accuracy: 89.1% | Precision: 72.3% | Recall: 44.4% | ROC AUC: 92.1%
-- Very conservative: only predicts "Top 3" when highly confident
-- Confusion Matrix (Test): TN=740, FP=23, FN=75, TP=60
-
-**Qualifying Round (Multi-Class)**
-- Overall Accuracy: 70.0%
-- Predicts which round driver reaches (Q1 eliminated / Q2 eliminated / Q3 made)
-- Demonstrates multi-class classification capability
+Turns out F1 is perfect for this because:
+1. **Lots of variables**: weather, tires, track evolution, driver form
+2. **Actual unpredictability**: You can't just memorize "Verstappen always wins"
+3. **Small datasets**: Only ~20 races/year forces you to be smart about features
+4. **Clear evaluation**: Did they make Q3? Yes or no - simple.
 
 ---
 
-## 🏗️ Project Structure
+## The Journey: From Failure to Working Models
+
+### What Didn't Work: Regression
+
+First attempt was predicting exact qualifying positions (P1, P2, P3...). Complete disaster:
+- **My model MAE: 3.78 positions**
+- **Naive baseline (just use practice times): 3.60 positions**
+- My fancy ML model was **worse than doing nothing**
+
+Why? Because qualifying is chaos:
+- Verstappen crashes in Q1 → goes from P1 to P20
+- Red flag at wrong time → random driver in P3
+- Rain in Q3 → everything shuffles
+
+The model basically learned "past position = future position" and gave up trying to predict actual patterns.
+
+### What Works: Classification
+
+Switched to yes/no questions instead:
+- "Will this driver make Q3?" (top 10)
+- "Will they get pole/P2/P3?" (podium)
+- "Which round will they reach?" (Q1/Q2/Q3)
+
+**Immediately better results:**
+- Q3 prediction: 73% accurate (vs 50% if you just guess)
+- Top 3 prediction: 89% accurate (vs 15% baseline)
+- Stopped trying to predict the unpredictable, started predicting patterns
+
+---
+
+## What Makes It Actually Learn
+
+The system has three smart features that handle real F1 scenarios:
+
+### 1. **Rookie Handling**
+New drivers (Antonelli, Bortoleto, Hadjar, Bearman in 2025) get special treatment:
+- Start with team baseline performance
+- Gradually blend in their own results as they get more races
+- In wet conditions, reduce their predicted performance (rookies struggle in rain)
+
+Example: Antonelli at Mercedes
+- First race: Uses Mercedes team average (assume ~P8)
+- After 3 races: 70% team baseline + 30% his actual results
+- After 10 races: Fully his own performance profile
+
+### 2. **Recent Form Tracking**
+Looks at last 5 races to catch momentum:
+- Lawson suddenly performing well at RB? Model adjusts up
+- Verstappen has 3 bad weekends? Model accounts for it
+- Filters out outliers (pit lane starts, DNQs) to avoid noise
+
+### 3. **Team Change Detection**
+Drivers moving teams (Hamilton to Ferrari, Sainz to Williams) are tricky:
+- Use 60% team historical performance at that circuit
+- Mix in 40% driver's own historical performance
+- Gradually shift to full driver data as races accumulate
+
+Example: Sainz at Williams in 2025
+- Monaco prediction: 60% Williams history (bad) + 40% Sainz history (good) = realistic P15ish
+- After 5 races at Williams: Model uses his actual Williams performance
+
+---
+
+## The Self-Learning Part (MLOps)
+
+This was the real learning goal - building a production ML system that improves automatically:
+
+### How It Works
+
+**After each race weekend:**
+1. Run `python main.py --from 2022 --to 2025` to extract new data
+2. System detects: "Hey, there's 1 new race!"
+3. Automatically retrains all 3 models with the new data
+4. Compares new models vs current: Are they better?
+5. If yes → deploys new version automatically
+6. API picks up new models within 60 seconds (no restart!)
+
+**What gets tracked:**
+```
+models/
+├── v20251122_125637/  ← Version from Nov 22
+│   ├── q3_classifier.pkl
+│   ├── metadata.json (accuracies, training date)
+├── v20251201_083045/  ← Version from Dec 1 (after Qatar)
+│   ├── q3_classifier.pkl
+│   ├── metadata.json
+├── training_history.json  ← Shows improvement over time
+└── active_version.txt     ← API uses this
+```
+
+### Why This Matters
+
+Most ML projects I saw in tutorials:
+- Train model once
+- Save to disk
+- Never update it
+- Accuracy slowly degrades
+
+Real production ML:
+- Continuous learning from new data
+- Automatic deployment of improvements
+- Version control (can rollback if needed)
+- Performance monitoring
+
+This project does the real thing. It's not just "I trained a model", it's "I built a self-improving system".
+
+---
+
+## Current Performance
+
+| Model | What It Predicts | Baseline | Actual | Status |
+|-------|-----------------|----------|--------|--------|
+| Q3 | Will driver make top 10? | 50% | **73%** | ✅ Production |
+| Top 3 | Will driver podium? | 15% | **89%** | ✅ Production |
+| Round | Which round (Q1/Q2/Q3)? | 33% | **78%** | ✅ Production |
+
+### What "Production" Means Here
+
+- **REST API**: FastAPI with Swagger docs at `/docs`
+- **Dynamic loading**: API reloads models when new version deployed
+- **Health checks**: `/health` endpoint shows model status
+- **Version tracking**: Know exactly which model version served which prediction
+- **Error handling**: Graceful failures, not crashes
+
+Basically, it's deployable to actual users (if anyone wanted F1 predictions from me lol).
+
+---
+
+## Project Structure
+
 ```
 formula1/
-├── main.py                           # Data pipeline orchestration
+├── main.py                    # Data pipeline (extracts from FastF1)
 ├── helpers/
-│   ├── feature_engineering.py        # ML feature extraction
-│   ├── historical_features.py        # Historical performance
-│   ├── general_utils.py              # Session loading, caching
-│   ├── driver_utils.py               # Driver telemetry features
-│   ├── circuit_utils.py              # Circuit profile extraction
-│   └── prediction.py                 # SSOT classification exports
+│   ├── auto_retrain.py       # Auto-retraining after new races
+│   ├── feature_engineering.py
+│   └── historical_features.py
 ├── data/
-│   ├── driver/                       # Driver session profiles (CSV)
-│   ├── circuit/                      # Circuit profiles (CSV)
-│   ├── driver_timing/                # Detailed lap telemetry (Parquet)
-│   ├── predictions/ssot/             # Official qualifying results (CSV)
-│   └── features/                     # ML-ready features (Parquet)
+│   ├── features/
+│   │   └── ml_features.parquet  # All training data
+│   └── predictions/ssot/        # Official results
 ├── models/
-│   ├── q3_classifier.pkl             # Q3 binary classifier (78.8%)
-│   ├── top3_classifier.pkl           # Top 3 binary classifier (89.1%)
-│   ├── q2_classifier.pkl             # Round multi-class classifier (70%)
-│   ├── classification_metadata.json  # Model metrics and features
-│   └── feature_importance_*.csv      # Feature rankings
-├── EDA/
-│   ├── 02_feature_exploration.ipynb  # EDA with visualizations
-│   ├── 03_feature_importance.ipynb   # Feature analysis
-│   ├── 04_quali_prediction_model.ipynb # Regression baseline
-│   └── 06_classification_models.ipynb  # ✨ Classification training
+│   ├── q3_classifier.pkl        # Active models
+│   ├── top3_classifier.pkl
+│   ├── round_classifier.pkl
+│   ├── v20251122_125637/        # Version history
+│   └── training_history.json
 └── api/
-    ├── __init__.py                   # Package initialization
-    ├── config.py                     # API configuration (v2.0)
-    ├── main.py                       # FastAPI app with 4 endpoints
-    ├── models.py                     # Classification request/response schemas
-    └── predictor.py                  # Prediction logic for 3 models
+    ├── main.py                  # FastAPI server
+    ├── predictor.py             # Prediction logic
+    └── dynamic_model_loader.py  # Auto-reload models
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
-### 1. Installation
+### Installation
 ```bash
 git clone https://github.com/tomasz-solis/formula1.git
 cd formula1
 python -m venv f1env
-source f1env/bin/activate  # Windows: f1env\Scripts\activate
+source f1env/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Build Raw Data (Optional)
+### Extract Data & Train Models
 ```bash
-# Extract telemetry and results for 2022-2025
+# Get all F1 data from 2022-2025 and train initial models
 python main.py --from 2022 --to 2025
+
+# What happens:
+# 1. Downloads telemetry from FastF1
+# 2. Engineers 48 features
+# 3. Trains 3 classification models
+# 4. Saves to models/ directory
 ```
 
-### 3. Run Classification Notebook
-```bash
-cd EDA
-jupyter notebook 06_classification_models.ipynb
-# Run all cells to train models and generate visualizations
-```
-
-### 4. Start API
-```bash
-cd api
-uvicorn main:app --reload
-# Visit: http://127.0.0.1:8000/docs
-```
-
----
-
-## 📊 Dataset
-
-### Current Dataset Stats
-- **1,778 qualifying sessions** (2022-2025 seasons)
-- **47 features** extracted from telemetry, circuits, and historical performance
-- **Target variables:** Q3 qualification (binary), Top 3 finish (binary), Qualifying round (multi-class)
-- **Train/Test split:** Temporal (2022-2023 train, 2024-2025 test)
-
-### Data Sources
-- **Driver telemetry:** FastF1 API (throttle, braking, DRS, tire degradation)
-- **Circuit profiles:** Track layout, corners, speed characteristics
-- **Qualifying results:** Official FIA classification data
-- **Historical features:** Circuit performance, recent form, weather-adjusted metrics
-
-### Feature Categories
-
-**Driver Performance (13 features):**
-- `best_throttle_ratio` - Peak throttle usage across practice
-- `avg_throttle_ratio` - Average throttle consistency
-- `best_brake_max_g` - Peak braking force
-- `fp3_throttle_ratio` - FP3 performance
-- `sprint_quali_throttle` - Sprint qualifying data
-- Tire degradation, DRS activations, braking intensity
-
-**Historical Performance (12 features):**
-- `circuit_avg_position` - Average qualifying position at circuit (3-year lookback)
-- `circuit_best_position` - Best finish at circuit
-- `recent_avg_position` - Rolling 5-race average
-- `form_trend` - Performance momentum (negative = improving)
-- `wet_avg_position` - Average position in wet conditions
-- `dry_avg_position` - Average position in dry conditions
-- `wet_dry_delta` - Wet vs dry performance gap
-- `team_circuit_avg_position` - Team historical performance
-- `team_momentum` - Team development trajectory
-- `team_recent_avg` - Team's recent form
-
-**Circuit Characteristics (10 features):**
-- `slow_corner_pct` - Percentage of slow-speed corners
-- `medium_corner_pct` - Percentage of medium-speed corners
-- `fast_corner_pct` - Percentage of high-speed corners
-- `total_corners` - Total corner count
-- `chicanes` - Chicane count
-- `avg_speed_circuit` - Average track speed
-- `top_speed_circuit` - Maximum achievable speed
-
-**Weather & Conditions (3 features):**
-- `rain_in_practice` - Rainfall detected
-- `avg_track_temp` - Mean track temperature
-- `track_temp_std` - Temperature variation
-
-**Weekend Format (3 features):**
-- `is_sprint_weekend` - Sprint vs normal weekend flag
-- `has_sprint_quali_data` - Sprint qualifying data available
-- `sessions_available` - Which practice sessions occurred
-
----
-
-## 🤖 Machine Learning Models
-
-### Classification Approach
-
-**Binary Classification (2 models):**
-1. **Q3 Qualification:** Predicts if driver makes top 10 (Q3 shootout)
-2. **Top 3 Finish:** Predicts if driver qualifies in podium positions
-
-**Multi-Class Classification (1 model):**
-3. **Qualifying Round:** Predicts which round driver reaches (Q1/Q2/Q3)
-
-### Model Architecture
-
-**Algorithm:** Random Forest Classifier
-```python
-RandomForestClassifier(
-    n_estimators=200,      # 200 trees for stable predictions
-    max_depth=10,          # Prevents overfitting
-    min_samples_split=20,  # Requires 20 samples to split
-    min_samples_leaf=10,   # Minimum leaf size
-    random_state=42        # Reproducibility
-)
-```
-
-**Why Random Forest:**
-- Handles non-linear relationships
-- Provides feature importance rankings
-- Robust to missing data (~40% in historical features)
-- Probability calibration for confidence scores
-
-### Feature Importance
-
-**Q3 Model Top Features:**
-```
-1. dry_avg_position      24.5%  ← Driver's average in dry conditions
-2. wet_avg_position      18.0%  ← Driver's average in wet conditions
-3. team_recent_avg       17.2%  ← Team's recent form
-4. recent_avg_position    3.7%  ← Driver's recent form
-5. team_momentum          3.1%  ← Team development trajectory
-```
-
-**Key Insight:** Weather-adjusted metrics (`wet_avg` + `dry_avg`) combine for 42% of model importance. This is a dramatic improvement from regression, where these same features had 0.0008 importance and were effectively ignored.
-
-### Training & Validation
-
-**Data Split:**
-- **Train:** 2022-2023 seasons (880 qualifying sessions)
-- **Test:** 2024-2025 seasons (898 qualifying sessions)
-- **Temporal split:** No data leakage (strict chronological order)
-
-**Handling Imbalance:**
-- Q3: 50/50 split (balanced)
-- Top 3: 15% positive (imbalanced, but acceptable for binary)
-- Round: 25%/25%/50% split (Q1/Q2/Q3)
-
-**Missing Data:**
-- 40% missing in historical features (new drivers, new circuits)
-- Median imputation strategy
-- Model robust to missing data due to ensemble approach
-
----
-
-## 🌐 REST API
-
-### API v2.0 - Classification Endpoints
-
-**Base URL:** `http://localhost:8000`
-
-### Endpoints
-
-#### 1. Q3 Prediction
-```bash
-POST /predict/q3
-```
-
-**Request:**
-```json
-{
-  "driver": "VER",
-  "circuit": "Monza",
-  "year": 2025,
-  "avg_rainfall": 0.0,
-  "avg_track_temp": 35.0
-}
-```
-
-**Response:**
-```json
-{
-  "will_make_q3": true,
-  "probability": 0.94,
-  "confidence": "high",
-  "model_accuracy": 0.788,
-  "features_used": {
-    "dry_avg_position": 1.8,
-    "wet_avg_position": 2.1,
-    "team_recent_avg": 1.5
-  }
-}
-```
-
-#### 2. Top 3 Prediction
-```bash
-POST /predict/top3
-```
-
-**Response:**
-```json
-{
-  "will_make_top3": true,
-  "probability": 0.78,
-  "confidence": "high",
-  "model_accuracy": 0.891
-}
-```
-
-#### 3. Round Prediction
-```bash
-POST /predict/round
-```
-
-**Response:**
-```json
-{
-  "predicted_round": "Q3",
-  "probabilities": {
-    "Q1": 0.02,
-    "Q2": 0.08,
-    "Q3": 0.90
-  },
-  "confidence": "high",
-  "model_accuracy": 0.70
-}
-```
-
-#### 4. Combined Predictions
-```bash
-POST /predict/all
-```
-
-Returns all three predictions in one call.
-
-### Other Endpoints
-
-- `GET /` - API information
-- `GET /health` - Health check (model status)
-- `GET /model/info` - Model metadata and metrics
-- `GET /drivers` - List available drivers
-- `GET /circuits` - List available circuits
-- `GET /docs` - Interactive API documentation (Swagger)
-
-### Running the API
-
+### Start the API
 ```bash
 cd api
 uvicorn main:app --reload
 
-# Visit interactive docs:
-# http://127.0.0.1:8000/docs
+# Visit http://127.0.0.1:8000 for nice landing page
+# Or http://127.0.0.1:8000/docs for Swagger UI
 ```
 
-### API Features
+### Make Predictions
+```bash
+# Will Verstappen make Q3 at Monza?
+curl -X POST http://localhost:8000/predict/q3 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "driver": "VER",
+    "circuit": "Monza",
+    "year": 2025
+  }'
 
-- ✅ **Probability Scores:** Every prediction includes confidence probability
-- ✅ **Confidence Levels:** Automatic high/medium/low classification
-- ✅ **Historical Feature Lookup:** Automatic retrieval from 2022-2025 data
-- ✅ **Manual Overrides:** Provide weather/temperature if known
-- ✅ **Fallback Strategy:** Uses median values for new drivers
-- ✅ **Model Metadata:** Exposes accuracy and feature importance
-
----
-
-## 📈 Visualizations
-
-The classification notebook generates publication-quality visualizations:
-
-### 1. Model Performance Summary
-- Baseline vs achieved accuracy comparison
-- Improvement over baseline for each model
-- Top 5 features for Q3 model
-
-### 2. Confusion Matrices
-- Q3 classification: 369 TN, 78 FP, 112 FN, 339 TP
-- Top 3 classification: Very conservative (23 FP vs 740 TN)
-- Round classification: Shows Q1/Q2/Q3 prediction patterns
-
-### 3. Feature Importance
-- Q3 model: Weather-adjusted metrics dominate
-- Top 3 model: Similar pattern but higher importance on `dry_avg`
-- Comparison shows consistent patterns across models
-
-### 4. ROC Curves
-- Q3: AUC 0.874 (excellent discrimination)
-- Top 3: AUC 0.921 (outstanding discrimination)
-- Both significantly above random classifier
-
-### 5. Class Balance
-- Q3: 50/50 (perfectly balanced)
-- Top 3: 85/15 (imbalanced but manageable)
-- Round: 25/25/50 (Q1/Q2/Q3)
-
----
-
-## 🔄 Model Evolution
-
-### Regression → Classification Pivot
-
-**Initial Approach (Failed):**
-- **Task:** Predict exact qualifying positions (1-20)
-- **Model:** Random Forest Regressor
-- **Result:** MAE 3.78 (worse than baseline 3.60)
-- **Problem:** Single feature dominated (91% importance on `recent_avg_position`)
-- **Conclusion:** Model just learned "past = future" without patterns
-
-**Pivot to Classification (Success):**
-- **Task:** Predict binary/multi-class outcomes
-- **Models:** Random Forest Classifiers (Q3, Top 3, Round)
-- **Result:** 70-89% accuracy (29-74 points above baseline)
-- **Benefit:** Multi-feature learning, weather metrics emerged (42% importance)
-
-### Key Learnings
-
-1. **Problem Formulation Matters More Than Model Complexity**
-   - Same features, different target → dramatically different results
-   - Classification enabled better feature utilization
-
-2. **Baselines Are Critical**
-   - Without naive baseline (MAE 3.60), would have thought MAE 3.78 was good
-   - Baseline comparison revealed regression was useless
-
-3. **Feature Importance Changes With Target**
-   - Regression: `recent_avg` = 91% importance
-   - Classification: Weather metrics = 42% importance
-   - Same features, different patterns learned
-
-4. **Missing Data Isn't Always a Dealbreaker**
-   - 40% missing in historical features
-   - Still achieved 79% accuracy with median imputation
-   - Clear target helps model handle sparse data
-
----
-
-## 📊 Project Status
-
-### ✅ Completed
-
-**Data Pipeline**
-- FastF1 telemetry extraction for 2022-2025 seasons
-- Circuit profile database (24 tracks)
-- Historical feature computation (3-year lookback)
-- Data leakage eliminated (temporal split validation)
-- Qualifying results SSOT (single source of truth)
-
-**Modeling**
-- 3 classification models trained and validated
-- Feature importance analysis complete
-- Confusion matrices and ROC curves generated
-- Model artifacts saved with metadata
-- Production-ready predictions with confidence scores
-
-**Deployment**
-- REST API with FastAPI (v2.0)
-- 4 prediction endpoints (Q3, Top 3, Round, Combined)
-- Interactive API documentation (Swagger)
-- Automatic historical feature lookup
-- Health monitoring and model info endpoints
-
-### 🚧 In Progress
-
-**Model Improvements**
-- Sprint weekend validation (limited data currently)
-- Circuit-specific model fine-tuning
-- Teammate comparison features (driver skill isolation)
-- Ensemble methods (stacking classifiers)
-
-**API Enhancements**
-- Docker containerization
-- Batch prediction endpoint
-- Real-time prediction during race weekends
-
-### 📋 Planned
-
-**Advanced Modeling**
-- Quali position within Q3 (P1-P10 among qualifiers)
-- Race outcome classification (podium, points, DNF)
-- Strategy optimization (tire choice, fuel load)
-- Driver skill metrics (overtaking, defending, consistency)
-
-**Data Sources**
-- Preseason testing data (2026 regulations)
-- Real-time weather API integration
-- Team radio sentiment analysis
-- Tire compound performance database
-
-**User Interface**
-- Streamlit dashboard for race weekend predictions
-- Historical comparison tool (driver vs driver)
-- Team performance analytics
-- Interactive visualizations
-
----
-
-## 🧪 Data Quality & Integrity
-
-### Data Leakage Elimination (Critical Fix)
-
-**Problem Identified (Nov 2025):**
-- Historical features contained test set data
-- `circuit_avg_position` showed perfect 1.000 correlation with actual positions
-- Model achieved unrealistic MAE < 1.0 by essentially copying answers
-
-**Detection:**
-- Diagnostic script `check_leakage.py` revealed 95-99% contamination
-- Circuit history included current year when predicting current year
-- Recent form used earlier races from same test year
-
-**Resolution:**
-- Strict temporal split: train on 2022-2023, test on 2024-2025
-- Circuit history excludes current year
-- Recent form computed only from previous years
-- Post-fix correlation: `circuit_avg_position` = 0.552 (realistic)
-
-**Impact:**
-- Honest classification accuracies: 70-89% (from fraudulent near-perfect)
-- Test predictions now genuinely predictive
-- All features validated for temporal separation
-
-### Missing Data Analysis
-
-**Historical Features (Expected Missingness):**
-```
-circuit_avg_position:    27.5%  ← New circuits, new drivers
-circuit_best_position:   27.5%  ← Same as above
-recent_avg_position:      0.0%  ← Always computable
-form_trend:               0.0%  ← Always computable
-wet_dry_delta:            1.6%  ← Limited wet sessions
-team_circuit_avg:        10.1%  ← New teams at circuits
-team_momentum:            1.2%  ← Mostly complete
-```
-
-**Handling Strategy:**
-- Median imputation for missing numerical features
-- Preserves feature distribution
-- Random Forest robust to imputation artifacts
-- New drivers fallback to population medians
-
-### Train/Test Split
-
-**Temporal Split (No Leakage):**
-- **Train:** 2022-2023 seasons (880 qualifying sessions)
-- **Test:** 2024-2025 seasons (898 qualifying sessions)
-- **Validation:** Chronological ordering enforced
-- **No shuffling:** Maintains temporal structure
-
-**Why Temporal:**
-- Simulates real prediction scenario (predict future from past)
-- Prevents data leakage (can't use future to predict past)
-- Tests generalization to new season dynamics
-
----
-
-## 🛠️ Technical Implementation
-
-### Classification Pipeline
-
-1. **Load Data:** Historical features + qualifying results (2022-2025)
-2. **Filter:** Keep only rows with qualifying position data
-3. **Create Targets:**
-   - Top 3: Binary (position ≤ 3)
-   - Q3: Binary (position ≤ 10)
-   - Round: Multi-class (Q1: 16-20, Q2: 11-15, Q3: 1-10) - called Q2 classifier
-4. **Feature Selection:** Remove target-related columns
-5. **Train/Test Split:** Temporal (2022-2023 / 2024-2025)
-6. **Imputation:** Median strategy for missing values
-7. **Train Models:** Random Forest Classifiers (3 models)
-8. **Evaluate:** Accuracy, precision, recall, F1, ROC AUC
-9. **Save:** Model artifacts, feature importance, metadata
-
-### Code Example
-
-```python
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-
-# Create Q3 target
-df['made_q3'] = (df['qualifying_position'] <= 10).astype(int)
-
-# Temporal split
-train = df[df['year'] <= 2023]
-test = df[df['year'] >= 2024]
-
-# Impute missing values
-imputer = SimpleImputer(strategy='median')
-X_train = imputer.fit_transform(train[features])
-X_test = imputer.transform(test[features])
-
-# Train classifier
-model = RandomForestClassifier(
-    n_estimators=200,
-    max_depth=10,
-    min_samples_split=20,
-    random_state=42
-)
-model.fit(X_train, train['made_q3'])
-
-# Predict with probabilities
-predictions = model.predict(X_test)
-probabilities = model.predict_proba(X_test)[:, 1]
-```
-
-### API Implementation
-
-**Prediction Flow:**
-1. Receive request: driver, circuit, year, weather (optional)
-2. Lookup historical features from database
-3. Override with manual weather if provided
-4. Impute missing features with medians
-5. Generate feature vector (47 features)
-6. Predict with all 3 models
-7. Return probabilities + confidence levels
-
-**Confidence Levels:**
-```python
-def get_confidence(probability):
-    if probability >= 0.75:
-        return "high"
-    elif probability >= 0.55:
-        return "medium"
-    else:
-        return "low"
+# Response:
+# {
+#   "will_make_q3": true,
+#   "probability": 0.95,
+#   "confidence": "high"
+# }
 ```
 
 ---
 
-## 📚 Resources & References
+## Features That Actually Matter
 
-### Documentation
-- **FastF1:** https://docs.fastf1.dev/
-- **F1 Regulations:** https://www.fia.com/regulation/category/110
-- **Ergast API:** http://ergast.com/mrd/
+After trying 50+ features, these are what the models actually use:
 
-### Learning Resources
-- **"Designing Machine Learning Systems"** by Chip Huyen (referenced for data leakage detection)
-- **scikit-learn Docs:** https://scikit-learn.org/
+**Top Features for Q3 Prediction:**
+1. `dry_avg_position` (24%) - How they normally qualify in dry
+2. `wet_avg_position` (18%) - How they qualify in wet
+3. `team_recent_avg` (17%) - Team's current form
+4. `recent_avg_position` (4%) - Driver's last 5 races
+5. `circuit_avg_position` (3%) - History at this track
 
-### Inspiration
-- [Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) - Formula Data Analysis
-- F1 data science community on Reddit, Kaggle
+**Key insight**: Weather-adjusted features matter. The model learned that some drivers (Sainz, Alonso, Norris) are rain specialists - they punch above their weight when it's wet.
 
 ---
 
-## 🤝 Contributing
+## Things I Learned Building This
 
-This is a learning project demonstrating end-to-end ML workflow. Suggestions welcome!
+### Data Leakage is Sneaky
+First version had 99% accuracy. Suspicious.
 
-**Areas for Improvement:**
-- Sprint weekend model validation (need more data)
-- Circuit-specific features (overtaking difficulty, tire wear)
-- Driver skill metrics (qualifying vs race pace)
-- Real-time predictions during race weekends
+Turned out I was accidentally including test set data in the training features:
+- "Circuit average" included races from 2024... when predicting 2024
+- Basically giving the model the answers
+- Fixed it, accuracy dropped to realistic 73% (honest)
+
+**Lesson**: Always validate your train/test split isn't contaminated
+
+### Small Datasets Force You to be Smart
+F1 only has ~20 races per year × 20 drivers = 400 data points/year
+
+Can't just throw data at the problem. Had to:
+- Use careful feature engineering
+- Blend historical baselines for new drivers
+- Handle missing data intelligently (rookie at new circuit = what?)
+
+**Lesson**: Feature engineering > more data (when you can't get more data)
+
+### Classification > Regression for Chaos
+Predicting "P1 vs P2 vs P3..." is too granular when:
+- Strategy varies (fuel loads, tire choice)
+- Red flags shuffle everything
+- One mistake in Q3 = P1 → P10
+
+But "Will they make Q3?" averages out the noise.
+
+**Lesson**: Match your problem granularity to your data's predictability
 
 ---
 
-## 📄 License
+## What's Next
 
-MIT License - feel free to learn from and build upon this work.
+**Short term (learning):**
+- Add sprint qualifying predictions
+- Try gradient boosting (XGBoost) vs Random Forest
+- Feature engineering: tire compound effects, track evolution
+
+**Medium term (production):**
+- Docker deployment
+- Monitoring dashboard (how's the model doing this season?)
+- A/B testing new model versions
+
+**Long term (maybe):**
+- Race predictions (not just qualifying)
+- Strategy optimization ("should Hamilton pit now?")
+- Real-time predictions during FP sessions
 
 ---
 
-## 🙏 Acknowledgements
+## Technical Bits
 
-- [Mirco Bartolozzi](https://www.linkedin.com/in/mirco-bartolozzi/) - Formula Data Analysis inspiration
-- **FastF1** - Telemetry and timing data
-- **F1 Community** - Inspiration and data science discussions
+**Stack:**
+- Python 3.13
+- FastF1 API for telemetry
+- scikit-learn for models
+- FastAPI for serving
+- Parquet for data storage
+
+**Why these choices:**
+- FastF1: Only good F1 data source
+- scikit-learn: Simple, interpretable models (can debug)
+- FastAPI: Fast, automatic docs, easy
+- Parquet: Columnar storage, way faster than CSV
 
 ---
 
-## 📧 Contact
+## Contact
 
 **Tomasz Solis**
-- Email: [tomasz.solis@gmail.com](mailto:tomasz.solis@gmail.com)
+- Email: tomasz.solis@gmail.com
 - LinkedIn: [linkedin.com/in/tomaszsolis](https://www.linkedin.com/in/tomaszsolis/)
 - GitHub: [github.com/tomasz-solis](https://github.com/tomasz-solis)
 
+Happy to chat about ML, F1, or how many times I broke this before it worked!
+
 ---
 
-**Last Updated:** November 18, 2025  
+**Last Updated:** November 18, 2024  
 **Status:** Classification models production-ready  
 **Current Models:**
 - Top 3 Finish: 89.1% accuracy (vs 15% baseline)

@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "min_new_races": 1,
+  "improvement_threshold": 0.01,
+  "auto_deploy": true
+}

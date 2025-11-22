@@ -28,10 +28,12 @@ warnings.filterwarnings(
 # ============================================================================
 import fastf1 as ff1
 import os
+import pandas as pd
 from datetime import datetime, timezone
 from helpers.general_utils import load_or_build_profiles
 from helpers.prediction import export_completed_classifications_csv_range
 from helpers.historical_features import compute_historical_features
+from helpers.auto_retrain import auto_retrain_if_needed
 
 # Configure FastF1 cache directory
 cache_dir = "data/.fastf1_cache"
@@ -137,13 +139,34 @@ def run_pipeline(
                 end_year=to_year 
             )
             
+            # 🔧 FIX: Convert datetime columns to strings for Parquet compatibility
+            print("🔧 Converting datetime columns for Parquet compatibility...")
+            
+            # Get datetime64 columns
+            datetime_cols = features_df.select_dtypes(include=['datetime64']).columns.tolist()
+            
+            # Check object columns for Timestamp objects
+            for col in features_df.select_dtypes(include=['object']).columns:
+                if len(features_df) > 0:
+                    # Check first non-null value
+                    non_null_values = features_df[col].dropna()
+                    if len(non_null_values) > 0:
+                        first_val = non_null_values.iloc[0]
+                        if isinstance(first_val, (pd.Timestamp, pd.Timedelta)):
+                            datetime_cols.append(col)
+            
+            # Convert to strings
+            for col in datetime_cols:
+                features_df[col] = features_df[col].astype(str)
+                print(f"   ✅ Converted {col} to string")
+            
             # Save to cache
             features_dir = "data/features"
             os.makedirs(features_dir, exist_ok=True)
             
             features_file = os.path.join(
                 features_dir,
-                f"ml_features_{from_year}_{to_year}.parquet"
+                "ml_features.parquet"
             )
             
             features_df.to_parquet(
@@ -181,6 +204,9 @@ def run_pipeline(
         except Exception as e:
             print(f"⚠️  Failed to compute historical features: {e}")
             print("   Continuing without features...")
+            # Print full traceback for debugging
+            import traceback
+            traceback.print_exc()
 
     print("\n🎉 Pipeline complete!")
 
@@ -215,3 +241,24 @@ if __name__ == "__main__":
         gp_name=args.gp_name,
         build_features=args.build_features
     )
+
+    # AUTO-RETRAIN: Check for new data and retrain if needed
+    print("\n" + "="*80)
+    print("🤖 CHECKING FOR AUTO-RETRAINING...")
+    print("="*80)
+    
+    result = auto_retrain_if_needed(
+        features_file="data/features/ml_features.parquet"
+    )
+    
+    if result['status'] == 'deployed':
+        print("\n✅ NEW MODEL VERSION DEPLOYED!")
+        print(f"   Version: v{result['version']}")
+        print(f"   Improvements:")
+        for model, improvement in result['comparison']['improvements'].items():
+            print(f"      {model}: {improvement:+.2%}")
+    
+    elif result['status'] == 'skipped':
+        print(f"\n⏭️  {result['reason']}")
+    
+    print("="*80)
