@@ -202,6 +202,10 @@ def load_driver_profiles(years: List[int]) -> pd.DataFrame:
         )
     
     combined = pd.concat(dfs, ignore_index=True)
+
+    from helpers.team_name_mapping import normalize_team_column
+    # Canonicalize team names   
+    combined = normalize_team_column(combined, col='team')
     
     # Validate expected columns exist
     expected_cols = ['driver', 'session', 'year', 'event']
@@ -308,7 +312,9 @@ def load_qualifying_results(years: List[int]) -> pd.DataFrame:
             if path.exists():
                 df = pd.read_csv(path)
                 df['year'] = year
-                
+
+                df['Position'] = df['qualifying_position']
+
                 # Use 'Position' as our target (not ClassifiedPosition)
                 if 'Position' not in df.columns:
                     raise ValueError(
@@ -316,7 +322,6 @@ def load_qualifying_results(years: List[int]) -> pd.DataFrame:
                         f"Available columns: {df.columns.tolist()}"
                     )
                 
-                df['qualifying_position'] = df['Position']
                 dfs.append(df)
                 logger.info("✅ Loaded %d results from %d", len(df), year)
             else:
@@ -332,7 +337,37 @@ def load_qualifying_results(years: List[int]) -> pd.DataFrame:
         )
     
     combined = pd.concat(dfs, ignore_index=True)
-    
+
+    # keep only rows with a valid quali position
+    valid_mask = (
+        combined['qualifying_position'].notna()
+        & combined['qualifying_position'].between(
+            MIN_QUALIFYING_POSITION,
+            MAX_QUALIFYING_POSITION
+        )
+    )
+
+    dropped = len(combined) - valid_mask.sum()
+    if dropped > 0:
+        logger.warning(
+            "Dropping %d rows with invalid qualifying_position (NaN or out of [%d, %d])",
+            dropped, MIN_QUALIFYING_POSITION, MAX_QUALIFYING_POSITION
+        )
+
+    combined = combined[valid_mask].copy()
+
+    logger.info("Total qualifying results: %d", len(combined))
+    logger.info(
+        "Position range: %.0f to %.0f",
+        combined['qualifying_position'].min(),
+        combined['qualifying_position'].max()
+    )
+
+    #team name cleanup + mapping
+    from helpers.team_name_mapping import normalize_team_column
+    # Canonicalize team names
+    combined = normalize_team_column(combined, col='team')
+
     # Validate target variable
     if not combined['qualifying_position'].between(
         MIN_QUALIFYING_POSITION, 
@@ -348,13 +383,6 @@ def load_qualifying_results(years: List[int]) -> pd.DataFrame:
             "Found %d qualifying positions outside range %d-%d",
             len(invalid), MIN_QUALIFYING_POSITION, MAX_QUALIFYING_POSITION
         )
-    
-    logger.info("Total qualifying results: %d", len(combined))
-    logger.info(
-        "Position range: %.0f to %.0f",
-        combined['qualifying_position'].min(),
-        combined['qualifying_position'].max()
-    )
     
     return combined
 
@@ -487,7 +515,7 @@ def merge_with_qualifying_results(
             features, ['year', 'event', 'driver'], "Features"
         )
         validate_dataframe_columns(
-            results, ['year', 'EventName', 'Abbreviation', 'qualifying_position'],
+            results, ['year', 'event', 'driver', 'qualifying_position'],
             "Results"
         )
     except ValueError as e:
@@ -496,14 +524,9 @@ def merge_with_qualifying_results(
     
     # Rename for merge
     results_clean = results[[
-        'year', 'EventName', 'Abbreviation', 
-        'qualifying_position', 'TeamName'
+        'year', 'event', 'driver',
+        'qualifying_position', 'team'
     ]].copy()
-    
-    results_clean = results_clean.rename(columns={
-        'EventName': 'event',
-        'Abbreviation': 'driver'
-    })
     
     # Merge
     try:
@@ -1253,6 +1276,25 @@ def prepare_qualifying_dataset(
         logger.info("Step 6/7: Adding target variable and fixing missing data")
         final = merge_with_qualifying_results(combined, results)
         final = fix_missing_circuit_data(final)
+
+        logger.info("Step 6.5/7: Filling rookie features with team-based priors")
+        try:
+            try:
+                # When run as a module: python -m helpers.feature_engineering
+                from helpers.team_priors import load_team_baselines, fill_features_batch
+            except ModuleNotFoundError:
+                # When run as a script: python helpers/feature_engineering.py
+                from team_priors import load_team_baselines, fill_features_batch
+
+            team_baselines = load_team_baselines('models/team_baselines.json')
+            final = fill_features_batch(final, team_baselines, rookie_penalty=1.5)
+            logger.info("   ✅ Rookie features filled using team baselines")
+        except FileNotFoundError:
+            logger.warning("   ⚠️ Team baselines not found, using fallback filling")
+            for col in final.columns:
+                if final[col].isnull().any() and final[col].dtype in ['float64', 'int64']:
+                    final[col] = final[col].fillna(final[col].median())
+
         
         # Step 5: Validate final dataset
         logger.info("Step 7/7: Validating dataset quality")

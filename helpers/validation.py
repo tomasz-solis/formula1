@@ -1,8 +1,16 @@
 """
-Data validation utilities for F1 ML pipeline.
+Data Validation Utilities for F1 ML Pipeline
 
-Provides functions to validate DataFrames at critical pipeline stages,
-ensuring data quality and catching issues early.
+Provides comprehensive validation functions for DataFrame quality assurance
+at critical pipeline stages. Validates data integrity, completeness, and
+correctness before model training or evaluation.
+
+Key Features:
+- Feature DataFrame validation (shape, columns, ranges)
+- Merge key compatibility checking
+- Session data validation
+- Dataset summary statistics
+- Comprehensive validation reports
 
 Example:
     >>> from helpers.validation import validate_feature_dataframe
@@ -22,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# VALIDATION FUNCTIONS
+# CORE VALIDATION FUNCTIONS
 # =============================================================================
 
 def validate_feature_dataframe(
@@ -32,15 +40,10 @@ def validate_feature_dataframe(
     min_rows: int = 100
 ) -> None:
     """
-    Validate that ML feature DataFrame meets quality standards.
+    Validate ML feature DataFrame meets quality standards.
     
-    Performs comprehensive checks on the dataset including:
-    - Shape validation (sufficient rows)
-    - Required columns present
-    - Target variable validity
-    - Missing value detection
-    - Duplicate detection
-    - Feature value ranges
+    Performs comprehensive checks including shape validation, required columns,
+    target variable integrity, missing values, duplicates, and feature ranges.
     
     Args:
         df: Feature DataFrame to validate
@@ -49,17 +52,17 @@ def validate_feature_dataframe(
         min_rows: Minimum acceptable number of rows
         
     Raises:
-        ValueError: If validation fails with detailed error messages
+        ValueError: If any validation check fails, with detailed error messages
         
     Example:
-        >>> features = ['best_throttle_ratio', 'avg_brake_max_g', ...]
+        >>> features = ['max_throttle_ratio', 'brake_max_g', 'avg_speed']
         >>> validate_feature_dataframe(df, features, 'qualifying_position')
-        INFO - ✅ Validation passed: 1353 rows, 36 features, 0 missing
+        ✅ Validation passed: 1353 rows, 36 features, 0 missing values
     """
     errors = []
     warnings = []
     
-    # 1. Check shape
+    # Check 1: DataFrame shape
     if len(df) == 0:
         errors.append("DataFrame is empty (0 rows)")
     elif len(df) < min_rows:
@@ -67,43 +70,45 @@ def validate_feature_dataframe(
             f"Only {len(df)} rows (minimum recommended: {min_rows})"
         )
     
-    # 2. Check required columns exist
+    # Check 2: Required columns present
     missing_cols = [col for col in required_columns if col not in df.columns]
     if missing_cols:
         errors.append(f"Missing required columns: {missing_cols}")
     
-    # 3. Check target variable
+    # Check 3: Target variable integrity
     if target_column in df.columns:
         # Missing values in target
         missing_target = df[target_column].isna().sum()
         if missing_target > 0:
+            pct_missing = 100 * missing_target / len(df)
             errors.append(
                 f"Target '{target_column}' has {missing_target} missing values "
-                f"({100 * missing_target / len(df):.1f}%)"
+                f"({pct_missing:.1f}%)"
             )
         
-        # Invalid values in target
+        # Invalid values (F1 positions are 1-20)
         valid_range = (1, 20)
-        invalid = ~df[target_column].between(*valid_range)
-        if invalid.any():
-            bad_vals = df.loc[invalid, target_column].unique()
+        invalid_mask = ~df[target_column].between(*valid_range)
+        if invalid_mask.any():
+            bad_values = df.loc[invalid_mask, target_column].unique()
             errors.append(
-                f"Target '{target_column}' has invalid values: {bad_vals}. "
+                f"Target '{target_column}' has invalid values: {bad_values}. "
                 f"Must be between {valid_range[0]}-{valid_range[1]}"
             )
     else:
         errors.append(f"Target column '{target_column}' not found")
     
-    # 4. Check for duplicates
-    if 'year' in df.columns and 'event' in df.columns and 'driver' in df.columns:
-        dupes = df.duplicated(subset=['year', 'event', 'driver']).sum()
-        if dupes > 0:
+    # Check 4: Duplicate detection
+    if all(col in df.columns for col in ['year', 'event', 'driver']):
+        duplicate_count = df.duplicated(subset=['year', 'event', 'driver']).sum()
+        if duplicate_count > 0:
+            pct_dupes = 100 * duplicate_count / len(df)
             errors.append(
-                f"Found {dupes} duplicate driver-race combinations "
-                f"({100 * dupes / len(df):.1f}%)"
+                f"Found {duplicate_count} duplicate driver-race combinations "
+                f"({pct_dupes:.1f}%)"
             )
     
-    # 5. Check for excessive missing values
+    # Check 5: Excessive missing values per column
     missing_per_col = df[required_columns].isnull().sum()
     high_missing = missing_per_col[missing_per_col > len(df) * 0.3]
     if not high_missing.empty:
@@ -111,13 +116,13 @@ def validate_feature_dataframe(
             f"Columns with >30% missing: {high_missing.to_dict()}"
         )
     
-    # 6. Check feature value ranges
-    if 'best_throttle_ratio' in df.columns:
-        invalid_throttle = ~df['best_throttle_ratio'].between(0, 1)
+    # Check 6: Feature value ranges
+    if 'max_throttle_ratio' in df.columns:
+        invalid_throttle = ~df['max_throttle_ratio'].between(0, 1)
         if invalid_throttle.any():
             errors.append(
                 f"Throttle ratio outside [0,1]: "
-                f"{df.loc[invalid_throttle, 'best_throttle_ratio'].describe()}"
+                f"{df.loc[invalid_throttle, 'max_throttle_ratio'].describe()}"
             )
     
     if 'slow_corner_pct' in df.columns:
@@ -152,24 +157,27 @@ def validate_merge_keys(
     context: str = "merge"
 ) -> None:
     """
-    Validate that merge keys exist and have compatible data types.
+    Validate merge keys exist and have compatible data types.
+    
+    Ensures safe DataFrame merging by checking key presence and type
+    compatibility. Warns on type mismatches but doesn't fail.
     
     Args:
         df1: First DataFrame to merge
         df2: Second DataFrame to merge
         merge_keys: List of column names to merge on
-        context: Description for error messages
+        context: Description for error messages (e.g., "driver-circuit merge")
         
     Raises:
-        ValueError: If merge keys invalid or incompatible
+        ValueError: If required merge keys are missing from either DataFrame
         
     Example:
         >>> validate_merge_keys(drivers, circuits, ['year', 'event', 'session'])
-        INFO - ✅ Merge keys validated for merge
+        ✅ Merge keys validated for driver-circuit merge
     """
     errors = []
     
-    # Check keys exist in both dataframes
+    # Check keys exist in both DataFrames
     missing_df1 = [k for k in merge_keys if k not in df1.columns]
     missing_df2 = [k for k in merge_keys if k not in df2.columns]
     
@@ -179,9 +187,10 @@ def validate_merge_keys(
         errors.append(f"DataFrame 2 missing keys: {missing_df2}")
     
     if errors:
-        raise ValueError(f"❌ {context} validation failed:\n" + "\n".join(errors))
+        error_msg = f"❌ {context} validation failed:\n" + "\n".join(errors)
+        raise ValueError(error_msg)
     
-    # Check data types are compatible
+    # Check data type compatibility (warn but don't fail)
     for key in merge_keys:
         dtype1 = df1[key].dtype
         dtype2 = df2[key].dtype
@@ -200,48 +209,63 @@ def validate_session_data(
     expected_sessions: List[str]
 ) -> None:
     """
-    Validate that session data contains expected session types.
+    Validate session data contains only expected session types.
+    
+    Ensures session codes are valid F1 session identifiers and flags
+    any unexpected session types for investigation.
     
     Args:
         df: DataFrame with 'session' column
-        expected_sessions: List of valid session codes
+        expected_sessions: List of valid session codes (e.g., ['FP1', 'FP2', 'Q'])
         
     Raises:
-        ValueError: If invalid sessions found
+        ValueError: If 'session' column missing or invalid sessions found
         
     Example:
         >>> validate_session_data(drivers, ['FP1', 'FP2', 'FP3', 'Q', 'R'])
-        INFO - ✅ All sessions valid: ['FP1', 'FP2', 'FP3', 'Q', 'R']
+        ✅ All sessions valid: ['FP1', 'FP2', 'FP3', 'Q', 'R']
     """
     if 'session' not in df.columns:
         raise ValueError("DataFrame missing 'session' column")
     
     actual_sessions = df['session'].unique().tolist()
-    invalid = [s for s in actual_sessions if s not in expected_sessions]
+    invalid_sessions = [s for s in actual_sessions if s not in expected_sessions]
     
-    if invalid:
+    if invalid_sessions:
         raise ValueError(
-            f"❌ Invalid session codes found: {invalid}\n"
+            f"❌ Invalid session codes found: {invalid_sessions}\n"
             f"Expected: {expected_sessions}"
         )
     
     logger.info("✅ All sessions valid: %s", actual_sessions)
 
 
+# =============================================================================
+# SUMMARY STATISTICS
+# =============================================================================
+
 def summarize_dataset(df: pd.DataFrame) -> Dict[str, Any]:
     """
-    Generate summary statistics for dataset.
+    Generate comprehensive summary statistics for dataset.
+    
+    Computes key metrics including row counts, missing values, year breakdown,
+    weekend types, and target variable statistics.
     
     Args:
         df: Feature DataFrame
         
     Returns:
-        Dictionary with summary statistics
+        Dictionary containing:
+        - total_rows, total_columns
+        - missing_values, missing_pct
+        - rows_per_year (if 'year' column exists)
+        - sprint_weekends, normal_weekends (if 'is_sprint_weekend' exists)
+        - target stats (if 'qualifying_position' exists)
         
     Example:
         >>> summary = summarize_dataset(df)
-        >>> print(summary['total_rows'])
-        1353
+        >>> print(f"Rows: {summary['total_rows']}, Missing: {summary['missing_pct']:.1f}%")
+        Rows: 1353, Missing: 2.3%
     """
     summary = {
         'total_rows': len(df),
@@ -260,7 +284,7 @@ def summarize_dataset(df: pd.DataFrame) -> Dict[str, Any]:
         summary['sprint_weekends'] = df['is_sprint_weekend'].sum()
         summary['normal_weekends'] = (~df['is_sprint_weekend']).sum()
     
-    # Target variable stats
+    # Target variable statistics
     if 'qualifying_position' in df.columns:
         summary['target_min'] = float(df['qualifying_position'].min())
         summary['target_max'] = float(df['qualifying_position'].max())
@@ -270,19 +294,18 @@ def summarize_dataset(df: pd.DataFrame) -> Dict[str, Any]:
     return summary
 
 
-# =============================================================================
-# VALIDATION REPORT
-# =============================================================================
-
 def generate_validation_report(df: pd.DataFrame) -> str:
     """
-    Generate comprehensive validation report for dataset.
+    Generate formatted validation report for dataset.
+    
+    Creates human-readable summary including dataset overview, year breakdown,
+    weekend types, target variable stats, and missing value analysis.
     
     Args:
         df: Feature DataFrame
         
     Returns:
-        Formatted report string
+        Multi-line formatted report string
         
     Example:
         >>> report = generate_validation_report(df)
@@ -290,7 +313,9 @@ def generate_validation_report(df: pd.DataFrame) -> str:
         ============================================================
         DATA VALIDATION REPORT
         ============================================================
-        ...
+        📊 Dataset Overview:
+           Rows: 1,353
+           ...
     """
     summary = summarize_dataset(df)
     
@@ -300,7 +325,7 @@ def generate_validation_report(df: pd.DataFrame) -> str:
     report.append("=" * 60)
     report.append("")
     
-    # Basic stats
+    # Dataset overview
     report.append("📊 Dataset Overview:")
     report.append(f"   Rows: {summary['total_rows']:,}")
     report.append(f"   Columns: {summary['total_columns']}")

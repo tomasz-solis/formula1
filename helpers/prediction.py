@@ -1,8 +1,17 @@
 """
-Classification export utilities for F1 ML pipeline.
+F1 Session Results Export Utilities
 
-Provides functions to export session results (qualifying positions, race results)
-to CSV files for downstream ML model training and evaluation.
+Provides functions to export session results (qualifying, race, sprint) from
+FastF1 API to CSV files for ML model training. Implements append-only strategy
+to avoid duplicate data and supports incremental updates.
+
+Key Features:
+- Append-only CSV exports (no overwrites)
+- Duplicate detection and prevention
+- Sprint weekend handling
+- Multi-season batch exports
+- Team name canonicalization
+- Comprehensive error tracking
 
 Example:
     >>> from helpers.prediction import export_completed_classifications_csv_range
@@ -23,13 +32,28 @@ from typing import Dict, Optional
 from tqdm import tqdm
 
 
+# =============================================================================
+# DATA STRUCTURES
+# =============================================================================
+
 @dataclass
 class ExportResult:
-    """Result of a classification export operation."""
-    status: str  # 'created', 'appended', 'skipped', 'error'
+    """
+    Result of a classification export operation.
+    
+    Attributes:
+        status: Operation outcome ('created', 'appended', 'skipped', 'error')
+        written_path: File path if successful (None if skipped/error)
+        reason: Explanation for skip/error (None if successful)
+    """
+    status: str
     written_path: Optional[str] = None
     reason: Optional[str] = None
 
+
+# =============================================================================
+# MULTI-SEASON EXPORT
+# =============================================================================
 
 def export_completed_classifications_csv_range(
     start_year: int,
@@ -41,16 +65,17 @@ def export_completed_classifications_csv_range(
     Export classification CSVs for multiple seasons (append-only).
     
     For each season and session type (Qualifying, Race, Sprint, Sprint Qualifying),
-    checks existing CSV files and appends only new events that aren't already present.
+    checks existing CSV files and appends only new events not already present.
+    Prevents duplicate data while enabling incremental updates.
     
     Args:
         start_year: First season to export (inclusive)
         end_year: Last season to export (inclusive)
         include_sprint: Whether to include sprint sessions (default: True)
-        up_to_utc: Optional cutoff time (only export sessions before this)
-    
+        up_to_utc: Optional cutoff time - only export sessions before this
+        
     Returns:
-        Nested dict: {year: {session_type: ExportResult}}
+        Nested dictionary: {year: {session_type: ExportResult}}
         
     Example:
         >>> results = export_completed_classifications_csv_range(2022, 2024)
@@ -61,7 +86,7 @@ def export_completed_classifications_csv_range(
     """
     results_by_season = {}
     
-    # Level 1: Iterate through years
+    # Iterate through years
     for year in tqdm(
         range(start_year, end_year + 1),
         desc="📦 Exporting seasons",
@@ -74,7 +99,7 @@ def export_completed_classifications_csv_range(
         
         year_results = {}
         
-        # Level 2: Iterate through session types for this year
+        # Iterate through session types for this year
         for session_type in tqdm(
             session_types,
             desc=f"  {year}",
@@ -101,6 +126,10 @@ def export_completed_classifications_csv_range(
     return results_by_season
 
 
+# =============================================================================
+# SINGLE-SESSION EXPORT
+# =============================================================================
+
 def export_session_classification(
     year: int,
     session_type: str,
@@ -109,18 +138,27 @@ def export_session_classification(
     """
     Export one session type for one year (append-only).
     
-    Checks if CSV exists, loads existing data, finds new events to add,
-    and appends only missing rows.
+    Workflow:
+    1. Check if CSV exists
+    2. Load existing data (if present)
+    3. Find new events to add
+    4. Append only missing rows
+    5. Save updated CSV
     
     Args:
         year: Season year
         session_type: 'Qualifying', 'Race', 'Sprint', or 'Sprint Qualifying'
-        up_to_utc: Optional cutoff time
-    
+        up_to_utc: Optional cutoff time (timezone-aware datetime)
+        
     Returns:
-        ExportResult with status and path
+        ExportResult with status and file path
+        
+    Example:
+        >>> result = export_session_classification(2024, 'Qualifying')
+        >>> print(result.status)
+        'appended'
     """
-    # Map session type to file name
+    # Map session type to filename
     file_mapping = {
         'Qualifying': f'{year}_qualifying.csv',
         'Race': f'{year}_race.csv',
@@ -136,29 +174,29 @@ def export_session_classification(
     
     output_dir = 'data/predictions/ssot'
     os.makedirs(output_dir, exist_ok=True)
-    
     output_file = os.path.join(output_dir, file_mapping[session_type])
     
-    # Get all events for this year and session type
+    # Get event schedule for this year
     try:
         schedule = ff1.get_event_schedule(year)
         
-        # CRITICAL FIX: Ensure Session1DateUtc is timezone-aware
+        # Ensure timezone-aware datetime
         if 'Session1DateUtc' in schedule.columns:
-            schedule['Session1DateUtc'] = pd.to_datetime(schedule['Session1DateUtc'], utc=True)
-        
+            schedule['Session1DateUtc'] = pd.to_datetime(
+                schedule['Session1DateUtc'],
+                utc=True
+            )
     except Exception as e:
         return ExportResult(
             status='error',
             reason=f"Failed to load schedule: {e}"
         )
     
-    # Filter to only completed events
+    # Filter to completed events only
     now = datetime.now(timezone.utc)
     
-    # Filter by cutoff time if provided
     if up_to_utc:
-        # Ensure up_to_utc is timezone-aware
+        # Ensure cutoff time is timezone-aware
         if up_to_utc.tzinfo is None:
             up_to_utc = up_to_utc.replace(tzinfo=timezone.utc)
         schedule = schedule[schedule['Session1DateUtc'] < up_to_utc]
@@ -186,7 +224,7 @@ def export_session_classification(
             reason=f"No FastF1 mapping for {session_type}"
         )
     
-    # Collect new data
+    # Collect new data from FastF1 API
     new_data = []
     errors = []
     
@@ -197,23 +235,22 @@ def export_session_classification(
         if 'test' in event_name.lower():
             continue
         
-        # Check if this session type exists for this event format
+        # Check if session exists for this event format
         event_format = str(event.get('EventFormat', 'conventional')).lower()
         
-        # Sprint Qualifying only exists in sprint_qualifying format
+        # Sprint Qualifying only in sprint_qualifying format
         if session_type == 'Sprint Qualifying' and event_format != 'sprint_qualifying':
             continue
         
-        # Sprint exists in all sprint formats
+        # Sprint only in sprint formats
         if session_type == 'Sprint' and 'sprint' not in event_format:
             continue
         
         try:
-            # Load session
+            # Load session from FastF1
             session = ff1.get_session(year, event_name, ff1_session)
             session.load(laps=False, telemetry=False, weather=False)
             
-            # Get results
             results = session.results
             
             if results is None or results.empty:
@@ -221,20 +258,26 @@ def export_session_classification(
             
             # Extract relevant columns
             if session_type in ['Qualifying', 'Sprint Qualifying']:
-                # Check if required columns exist
                 if 'Position' not in results.columns:
                     continue
                 
-                event_data = results[['DriverNumber', 'Abbreviation', 'TeamName', 'Position']].copy()
-                event_data.columns = ['driver_number', 'driver', 'team', 'qualifying_position']
+                event_data = results[[
+                    'DriverNumber', 'Abbreviation', 'TeamName', 'Position'
+                ]].copy()
+                event_data.columns = [
+                    'driver_number', 'driver', 'team', 'qualifying_position'
+                ]
                 
             elif session_type in ['Race', 'Sprint']:
-                # Check if required columns exist
                 if 'Position' not in results.columns:
                     continue
                 
-                event_data = results[['DriverNumber', 'Abbreviation', 'TeamName', 'Position']].copy()
-                event_data.columns = ['driver_number', 'driver', 'team', 'race_position']
+                event_data = results[[
+                    'DriverNumber', 'Abbreviation', 'TeamName', 'Position'
+                ]].copy()
+                event_data.columns = [
+                    'driver_number', 'driver', 'team', 'race_position'
+                ]
             
             # Add metadata
             event_data['year'] = year
@@ -244,43 +287,53 @@ def export_session_classification(
             new_data.append(event_data)
             
         except Exception as e:
-            # Track errors for debugging
             errors.append(f"{event_name}: {str(e)}")
             continue
     
-    # If no new data collected
+    # Handle case with no new data
     if not new_data:
         if os.path.exists(output_file):
             return ExportResult(status='skipped', written_path=output_file)
         else:
-            # Show first few errors if we have them
-            error_msg = f"No data extracted. Sample errors: {errors[:3]}" if errors else "No data available"
+            error_msg = (
+                f"No data extracted. Sample errors: {errors[:3]}" 
+                if errors else "No data available"
+            )
             return ExportResult(status='error', reason=error_msg)
     
     new_df = pd.concat(new_data, ignore_index=True)
     
-    # Check if file exists
+    # Merge with existing data (if file exists)
     if os.path.exists(output_file):
-        # Load existing data
         existing_df = pd.read_csv(output_file)
         
-        # Find what's new (based on year + event + driver)
+        # Canonicalize team names in both DataFrames
+        from helpers.team_name_mapping import normalize_team_column
+        existing_df = normalize_team_column(existing_df, col='team')
+        new_df = normalize_team_column(new_df, col='team')
+        
+        # Find new entries (not in existing data)
         existing_keys = set(
-            existing_df[['year', 'event', 'driver']].itertuples(index=False, name=None)
+            existing_df[['year', 'event', 'driver']].itertuples(
+                index=False, name=None
+            )
         )
         new_keys = set(
-            new_df[['year', 'event', 'driver']].itertuples(index=False, name=None)
+            new_df[['year', 'event', 'driver']].itertuples(
+                index=False, name=None
+            )
         )
         
         keys_to_add = new_keys - existing_keys
         
         if not keys_to_add:
-            # Nothing new to add
             return ExportResult(status='skipped', written_path=output_file)
         
         # Filter to only new rows
-        mask = new_df[['year', 'event', 'driver']].apply(tuple, axis=1).isin(keys_to_add)
-        rows_to_add = new_df[mask]
+        new_rows_mask = new_df[['year', 'event', 'driver']].apply(
+            tuple, axis=1
+        ).isin(keys_to_add)
+        rows_to_add = new_df[new_rows_mask]
         
         # Append and save
         updated_df = pd.concat([existing_df, rows_to_add], ignore_index=True)

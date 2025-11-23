@@ -823,7 +823,9 @@ def load_or_build_profiles(
         # 3) Otherwise just load the cached CSV
         else:
             print(f"✅ Using cached {file_type} profile for {year}")
-            df      = pd.read_csv(cache_path)
+            df = pd.read_csv(cache_path)
+            from helpers.team_name_mapping import normalize_team_column
+            df = normalize_team_column(df, col="team")
             skipped = pd.DataFrame()
 
         all_data.append(df)
@@ -890,6 +892,10 @@ def load_classifications(
     quali_df = pd.concat(quali_dfs, ignore_index=True) if quali_dfs else pd.DataFrame()
     race_df = pd.concat(race_dfs, ignore_index=True) if race_dfs else pd.DataFrame()
     
+    from helpers.team_name_mapping import normalize_team_column
+    quali_df = normalize_team_column(quali_df, col='team')
+    race_df = normalize_team_column(race_df,col='team')
+
     return quali_df, race_df
 
 
@@ -922,7 +928,6 @@ def merge_driver_features_with_targets(
         quali_file = f'data/predictions/ssot/{year}_qualifying.csv'
         if os.path.exists(quali_file):
             quali_dfs.append(pd.read_csv(quali_file))
-        
         race_file = f'data/predictions/ssot/{year}_race.csv'
         if os.path.exists(race_file):
             race_dfs.append(pd.read_csv(race_file))
@@ -934,6 +939,10 @@ def merge_driver_features_with_targets(
         print("   ⚠️  No classification data found!")
         return pd.DataFrame()
     
+    from helpers.team_name_mapping import normalize_team_column
+    quali_df = normalize_team_column(quali_df, col='team')
+    race_df = normalize_team_column(race_df, col='team')
+
     print(f"   Loaded {len(quali_df) + len(race_df):,} classification records")
     
     # ========================================================================
