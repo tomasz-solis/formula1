@@ -164,3 +164,8 @@ repos.code-workspace
 htmlcov/
 *.pyc
 __pycache__/
+
+Dockerfile/
+*.csv
+diagnose_rookie_problem.py
+validate_team_priors.py

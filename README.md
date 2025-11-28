@@ -1,10 +1,10 @@
-# 🏎️ Formula 1 Qualifying Predictor
+# Formula 1 Qualifying Predictor
 
 Predicting F1 qualifying outcomes using machine learning. This started as a way to learn ML properly - turns out predicting exact grid positions is basically impossible (chaos theory is real!), but predicting who makes Q3 or podium? That works pretty well.
 
-**Current Models:** Q3: 73% accurate | Top 3: 89% accurate | Round: 78% accurate
+**Current Models:** Q3: 74% accurate | Top 3: 89% accurate | Round: 75% accurate
 
-The system learns from each race weekend automatically - no manual retraining needed. Now with proper rookie handling (because Antonelli at Mercedes ≠ random rookie at Williams).
+The system learns from each race weekend automatically - no manual retraining needed. Now with proper rookie handling (because Antonelli at Mercedes is not equal to random rookie at Williams) and robust missing data fallbacks.
 
 ---
 
@@ -33,9 +33,9 @@ First attempt was predicting exact qualifying positions (P1, P2, P3...). Complet
 - My fancy ML model was **worse than doing nothing**
 
 Why? Because qualifying is chaos:
-- Verstappen crashes in Q1 → goes from P1 to P20
-- Red flag at wrong time → random driver in P3
-- Rain in Q3 → everything shuffles
+- Verstappen crashes in Q1 goes from P1 to P20
+- Red flag at wrong time random driver in P3
+- Rain in Q3 everything shuffles
 
 The model basically learned "past position = future position" and gave up trying to predict actual patterns.
 
@@ -47,7 +47,7 @@ Switched to yes/no questions instead:
 - "Which round will they reach?" (Q1/Q2/Q3)
 
 **Immediately better results:**
-- Q3 prediction: 73% accurate (vs 50% if you just guess)
+- Q3 prediction: 74% accurate (vs 50% if you just guess)
 - Top 3 prediction: 89% accurate (vs 15% baseline)
 - Stopped trying to predict the unpredictable, started predicting patterns
 
@@ -57,7 +57,7 @@ Switched to yes/no questions instead:
 
 The system has smart features that handle real F1 scenarios:
 
-### 1. **Team-Based Rookie Handling** (The Latest Addition)
+### 1. **Team-Based Rookie Handling**
 
 This was trickier than expected. Early versions treated all rookies the same - filling missing data with grid averages. Problem: Antonelli at Mercedes has way more potential than a pay driver at a backmarker team.
 
@@ -75,38 +75,78 @@ Race 15: Fully his own data = Predict wherever he's actually been
 ```
 
 **Why this matters:**
-- 2025 has 5 rookies (~25% of the grid)
+- 2025 has 4 rookies (~20% of the grid)
 - Model was treating "no historical data" as "probably midfield"
-- Now it knows Antonelli (Mercedes) ≠ Bortoleto (Sauber)
-- Rookie prediction error dropped ~0.4 positions
+- Now it knows Antonelli (Mercedes) is not equal to Bortoleto (Sauber)
 
 The system tracks team performance separately, regenerates baselines after each race, and intelligently fills missing features based on team context. Much better than just saying "idk, probably P10?"
 
-### 2. **Recent Form Tracking**
+### 2. **Robust Missing Data Handling**
+
+The November 28 2025 update fixed critical production bugs around missing data:
+
+**The Problem:**
+- Predicting 2025 races before they happen (no historical data yet)
+- Rookies with zero F1 experience
+- Drivers at new circuits (Las Vegas 2023)
+- API was crashing with "index out of bounds" errors
+
+**The Solution - 5-Level Feature Fallback:**
+1. **Exact match**: Driver at this circuit this year
+2. **Circuit history**: Driver at this circuit (any recent year)
+3. **Same year average**: Driver's average at other circuits this year
+4. **Previous year**: Driver's average from last season
+5. **Population median**: Last resort baseline (rookies without team data)
+
+**Why this matters:**
+- System never crashes on missing data anymore
+- Predictions are context-aware (uses most relevant available data)
+- Graceful degradation (best data → good data → acceptable baseline)
+
+Example: Predicting Verstappen at Las Vegas 2025 (before race happens)
+```
+Try: VER + Las Vegas + 2025 → Not found
+Try: VER + Las Vegas + 2024 → Found! Use this
+Result: Prediction based on 2024 Las Vegas performance
+```
+
+Example: Predicting rookie Antonelli at Monaco 2025
+```
+Try: ANT + Monaco + 2025 → Not found (rookie)
+Try: ANT + Monaco + any year → Not found (rookie)
+Try: ANT + other 2025 circuits → Not found (hasn't raced yet)
+Try: ANT + 2024 data → Not found (rookie)
+Use: Mercedes team baseline + rookie adjustment
+Result: Prediction ~P7 (good team, rookie uncertainty)
+```
+
+### 3. **Recent Form Tracking**
 
 Looks at last 5 races to catch momentum:
 - Lawson suddenly performing well at RB? Model adjusts up
 - Verstappen has 3 bad weekends? Model accounts for it
 - Filters out outliers (pit lane starts, DNQs) to avoid noise
 
-### 3. **Team Change Detection**
+### 4. **Team Change Detection**
 
 Drivers moving teams (Hamilton to Ferrari, Sainz to Williams) are tricky:
-- Use 60% team historical performance at that circuit
-- Mix in 40% driver's own historical performance
-- Gradually shift to full driver data as races accumulate
+- Use 70% driver historical skill
+- Mix in 30% new team baseline performance
+- Cap predictions at realistic levels for new team
 
 Example: Sainz at Williams in 2025
-- Monaco prediction: 60% Williams history (rough) + 40% Sainz history (good) = realistic P14-16
-- After 5 races at Williams: Model uses his actual Williams performance
+- His Ferrari history says P6-8 (fast driver, fast car)
+- Williams baseline says P14-16 (slower car)
+- Blended prediction: P10-12 (fast driver, slower car)
+- Reality check: Can't predict P6 at Williams (unrealistic)
 
-### 4. **Smart Missing Data Handling**
+### 5. **Smart Missing Data Handling**
 
 Because real F1 data is messy:
-- Team names change (AlphaTauri → RB, Alfa Romeo → Sauber)
+- Team names change (AlphaTauri to RB, Alfa Romeo to Sauber)
 - Circuits get added mid-season (Las Vegas 2023)
 - Rookies have zero history
-- Returnees (Colapinto → back to reserve → back to race seat)
+- Returnees (Colapinto back to reserve back to race seat)
 
 The system canonicalizes team names, fills missing values intelligently based on context, and tracks data availability per feature. No more "NaN means guess randomly".
 
@@ -124,21 +164,21 @@ This was the real learning goal - building a production ML system that improves 
 3. Automatically regenerates team baselines with new data
 4. Retrains all 3 models with updated features
 5. Compares new models vs current: Are they better?
-6. If yes → deploys new version automatically
+6. If yes deploys new version automatically
 7. API picks up new models within 60 seconds (no restart!)
 
 **What gets tracked:**
 ```
 models/
-├── v20251122_125637/  ← Version from Nov 22
+├── v20251122_125637/  Version from Nov 22
 │   ├── q3_classifier.pkl
 │   ├── metadata.json (accuracies, training date)
-├── v20251201_083045/  ← Version from Dec 1 (after Qatar)
+├── v20251128_161325/  Version from Nov 28 (critical fixes)
 │   ├── q3_classifier.pkl
 │   ├── metadata.json
-├── team_baselines.json      ← Regenerates after each race
-├── training_history.json    ← Shows improvement over time
-└── active_version.txt       ← API uses this
+├── team_baselines.json      Regenerates after each race
+├── training_history.json    Shows improvement over time
+└── active_version.txt       API uses this
 ```
 
 ### Why This Matters
@@ -164,14 +204,16 @@ This project does the real thing. It's not just "I trained a model", it's "I bui
 
 | Model | What It Predicts | Baseline | Actual | Status |
 |-------|-----------------|----------|--------|--------|
-| Q3 | Will driver make top 10? | 50% | **73%** | ✅ Production |
-| Top 3 | Will driver podium? | 15% | **89%** | ✅ Production |
-| Round | Which round (Q1/Q2/Q3)? | 33% | **78%** | ✅ Production |
+| Q3 | Will driver make top 10? | 50% | **74%** | Production |
+| Top 3 | Will driver podium? | 15% | **89%** | Production |
+| Round | Which round (Q1/Q2/Q3)? | 33% | **75%** | Production |
 
-**Recent improvements:**
-- Rookie prediction error: -0.4 positions (after team-based priors)
-- Team change handling: More accurate first-race predictions
-- Missing data handling: Zero crashes on incomplete data
+**Recent improvements (Nov 28, 2025):**
+- Fixed critical missing data crashes (API 500 errors eliminated)
+- 5-level feature fallback hierarchy implemented
+- 2025 predictions now work (including future races)
+- Rookie predictions improved with team context
+- Team change handling more realistic (capped blending)
 
 ### What "Production" Means Here
 
@@ -179,10 +221,11 @@ This project does the real thing. It's not just "I trained a model", it's "I bui
 - **Dynamic loading**: API reloads models when new version deployed
 - **Health checks**: `/health` endpoint shows model status
 - **Version tracking**: Know exactly which model version served which prediction
-- **Graceful degradation**: Missing features? Use team baseline, don't crash
+- **Graceful degradation**: Missing features? Use intelligent fallback, don't crash
 - **Error handling**: Proper validation, not just 500 errors
+- **Robust predictions**: Handles rookies, team changes, future races, missing data
 
-Basically, it's deployable to actual users (if anyone wanted F1 predictions from me lol).
+Basically, it's deployable to actual users (if anyone wanted F1 predictions from me).
 
 ---
 
@@ -191,12 +234,13 @@ Basically, it's deployable to actual users (if anyone wanted F1 predictions from
 ```
 formula1/
 ├── main.py                    # Data pipeline (extracts from FastF1)
+├── race_prediction.py         # NEW: Production prediction script
 ├── helpers/
 │   ├── auto_retrain.py       # Auto-retraining after new races
 │   ├── feature_engineering.py # Feature generation
 │   ├── historical_features.py # Time-series features
-│   ├── team_priors.py        # NEW: Team baseline computation
-│   ├── team_name_mapping.py  # NEW: Handle team rebranding
+│   ├── team_priors.py        # Team baseline computation
+│   ├── team_name_mapping.py  # Handle team rebranding
 │   └── validation.py         # Data quality checks
 ├── data/
 │   ├── features/
@@ -206,12 +250,12 @@ formula1/
 │   ├── q3_classifier.pkl        # Active models
 │   ├── top3_classifier.pkl
 │   ├── round_classifier.pkl
-│   ├── team_baselines.json      # NEW: Team performance baselines
-│   ├── v20251122_125637/        # Version history
+│   ├── team_baselines.json      # Team performance baselines
+│   ├── v20251128_161325/        # Latest version (Nov 28)
 │   └── training_history.json
 └── api/
     ├── main.py                  # FastAPI server
-    ├── predictor.py             # Prediction logic
+    ├── predictor.py             # Prediction logic (FIXED: robust fallback)
     └── dynamic_model_loader.py  # Auto-reload models
 ```
 
@@ -250,7 +294,7 @@ uvicorn main:app --reload
 # Or http://127.0.0.1:8000/docs for Swagger UI
 ```
 
-### Make Predictions
+### Make Predictions (API)
 ```bash
 # Will Verstappen make Q3 at Monza?
 curl -X POST http://localhost:8000/predict/q3 \
@@ -269,6 +313,44 @@ curl -X POST http://localhost:8000/predict/q3 \
 # }
 ```
 
+### Make Predictions (Script - NEW)
+```bash
+# Predict full grid for upcoming race
+# 1. Edit race_prediction.py - update RACE_CONFIG at top
+# 2. Set circuit, weather, sprint weekend status
+# 3. Run:
+python race_prediction.py
+
+# Output:
+# - Full grid predictions with probabilities
+# - Recent form adjustments
+# - Team change impacts
+# - Practice session integration (if available)
+# - Saves to CSV: Qatar_GP_2025_predictions.csv
+```
+
+**Race Configuration Example:**
+```python
+RACE_CONFIG = {
+    "circuit": "Qatar Grand Prix",
+    "year": 2025,
+    "is_sprint_weekend": True,  # Sprint or normal
+    
+    "weather": {
+        "avg_rainfall": 0.0,
+        "avg_track_temp": 32.0,
+        "avg_air_temp": 28.0
+    }
+}
+```
+
+To predict a new race, just update these 5 values. Script handles:
+- Sprint weekends (FP1 + Sprint Quali)
+- Normal weekends (FP1 + FP2 + FP3)
+- Rookies (uses team baseline)
+- Team changes (blended predictions)
+- Missing data (intelligent fallback)
+
 ---
 
 ## Features That Actually Matter
@@ -279,7 +361,7 @@ After trying 50+ features, these are what the models actually use:
 1. `dry_avg_position` (24%) - How they normally qualify in dry
 2. `wet_avg_position` (18%) - How they qualify in wet
 3. `team_recent_avg` (17%) - Team's current form
-4. `team_baseline_quali` (8%) - NEW: Team performance baseline
+4. `team_baseline_quali` (8%) - Team performance baseline
 5. `recent_avg_position` (4%) - Driver's last 5 races
 6. `circuit_avg_position` (3%) - History at this track
 
@@ -295,12 +377,33 @@ First version had 99% accuracy. Suspicious.
 Turned out I was accidentally including test set data in the training features:
 - "Circuit average" included races from 2024... when predicting 2024
 - Basically giving the model the answers
-- Fixed it, accuracy dropped to realistic 73% (honest)
+- Fixed it, accuracy dropped to realistic 74% (honest)
 
 **Lesson**: Always validate your train/test split isn't contaminated
 
+### Missing Data Requires Context (NEW)
+
+First approach to missing data: Fill with median. Simple, wrong.
+
+**Problem discovered (Nov 2025):**
+- API crashed when predicting 2025 races (future data doesn't exist yet)
+- Rookies got median-filled features (treating "no data" like "bad data")
+- Feature count mismatches (2 features returned when model expects 48)
+
+**Solution implemented:**
+- 5-level fallback hierarchy (exact match → circuit history → year average → previous year → median)
+- Context-aware imputation (rookies get team baseline, not population median)
+- Graceful degradation (always return valid feature vector)
+
+**Result:**
+- Zero crashes on missing data
+- Predictions work for future races (uses most recent data)
+- Rookies predicted sensibly (Mercedes rookie not equal to Sauber rookie)
+
+**Lesson**: Understand WHY data is missing before you fill it. Different types of missing data need different strategies.
+
 ### Small Datasets Force You to be Smart
-F1 only has ~20 races per year × 20 drivers = 400 data points/year
+F1 only has ~20 races per year times 20 drivers = 400 data points/year
 
 Can't just throw data at the problem. Had to:
 - Use careful feature engineering
@@ -313,39 +416,41 @@ Can't just throw data at the problem. Had to:
 Predicting "P1 vs P2 vs P3..." is too granular when:
 - Strategy varies (fuel loads, tire choice)
 - Red flags shuffle everything
-- One mistake in Q3 = P1 → P10
+- One mistake in Q3 = P1 to P10
 
 But "Will they make Q3?" averages out the noise.
 
 **Lesson**: Match your problem granularity to your data's predictability
-
-### Missing Data Isn't Always Random
-First approach: Fill NaN with median. Simple, wrong.
-
-Problem: Rookie with no history ≠ bad driver with bad history. Both had NaN features, but very different meanings.
-
-Solution: Context-aware filling
-- Rookies get team baseline + uncertainty
-- Circuit rookies get driver baseline at similar tracks
-- Missing weather data gets interpolated from nearby sessions
-
-**Lesson**: Understand WHY data is missing before you fill it
 
 ### Team Context Matters More Than Expected
 Tried to predict rookies using just driver-level features. Failed.
 
 Antonelli at Mercedes was getting predicted at P15 (midfield) because "no data = assume average". But Mercedes isn't average.
 
-Added team baselines → rookie predictions improved significantly. The model learned "unknown Mercedes driver" is way different from "unknown Williams driver".
+Added team baselines rookie predictions improved significantly. The model learned "unknown Mercedes driver" is way different from "unknown Williams driver".
 
 **Lesson**: Domain knowledge > generic ML tricks. F1 teams vary wildly in performance.
+
+### Production Means Handling Edge Cases (NEW)
+
+Building a model that works on clean training data is easy. Building one that doesn't crash in production is hard.
+
+**Edge cases fixed:**
+- Future races (data doesn't exist yet)
+- Rookies mid-season (partial data)
+- Team changes (conflicting historical data)
+- New circuits (no circuit history)
+- Missing practice data (weather issues, crashes)
+- Numpy type serialization (JSON doesn't understand numpy.bool_)
+
+**Lesson**: Production ML is 20% modeling, 80% handling edge cases gracefully.
 
 ---
 
 ## What's Next
 
 **Short term (learning):**
-- Add sprint qualifying predictions
+- Add practice session predictions (FP1 → FP2 → FP3 progression)
 - Try gradient boosting (XGBoost) vs Random Forest
 - Feature engineering: tire compound effects, track evolution
 
@@ -354,11 +459,12 @@ Added team baselines → rookie predictions improved significantly. The model le
 - Monitoring dashboard (how's the model doing this season?)
 - A/B testing new model versions
 - Automated data quality alerts
+- Race predictions (not just qualifying)
 
 **Long term (maybe):**
-- Race predictions (not just qualifying)
 - Strategy optimization ("should Hamilton pit now?")
 - Real-time predictions during FP sessions
+- Web UI for non-technical users
 
 ---
 
@@ -377,10 +483,11 @@ Added team baselines → rookie predictions improved significantly. The model le
 - FastAPI: Fast, automatic docs, easy
 - Parquet: Columnar storage, way faster than CSV
 
-**Recent additions:**
-- Team baseline computation (JSON storage)
-- Canonicalized team names (handles rebranding)
-- Smart NaN filling (context-aware imputation)
+**Recent additions (Nov 28, 2025):**
+- 5-level feature fallback hierarchy (robust missing data handling)
+- Numpy type conversion (fixes JSON serialization errors)
+- Production race prediction script (handles sprint weekends)
+- Improved team change blending (realistic capping)
 
 ---
 
@@ -395,10 +502,10 @@ Happy to chat about ML, F1, or how many times I broke this before it worked!
 
 ---
 
-**Last Updated:** November 23, 2025  
-**Status:** Classification models production-ready with team-based rookie handling  
+**Last Updated:** November 28, 2025  
+**Status:** Production-ready with robust missing data handling  
 **Current Models:**
-- Top 3 Finish: 89.1% accuracy (vs 15% baseline)
-- Q3 Qualification: 78.8% accuracy (vs 50% baseline)
-- Qualifying Round: 70.0% accuracy (vs 33% baseline)
-- Rookie Predictions: -0.4 position error improvement via team priors
+- Top 3 Finish: 88.9% accuracy (vs 15% baseline)
+- Q3 Qualification: 73.9% accuracy (vs 50% baseline)
+- Qualifying Round: 75.3% accuracy (vs 33% baseline)
+- Feature Fallback: 5-level hierarchy handles rookies, new circuits, team changes

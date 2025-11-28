@@ -9,7 +9,7 @@ MODEL_Q3_PATH = BASE_DIR / "models" / "q3_classifier.pkl"
 MODEL_TOP3_PATH = BASE_DIR / "models" / "top3_classifier.pkl"
 MODEL_Q2_PATH = BASE_DIR / "models" / "q2_classifier.pkl"
 METADATA_PATH = BASE_DIR / "models" / "classification_metadata.json"
-DATA_PATH = BASE_DIR / "data" / "features" / "ml_features_2022_2025.parquet"
+DATA_PATH = BASE_DIR / "data" / "features" / "ml_features.parquet"
 
 # API settings
 API_TITLE = "F1 Qualifying Classifier API"

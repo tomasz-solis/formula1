@@ -5,263 +5,216 @@ Handles predictions for Q3, Top3, and Round classification.
 Supports both static (backward compatible) and dynamic model loading.
 """
 
-import joblib
-import json
 import pandas as pd
 import numpy as np
+import joblib
+import json
 from pathlib import Path
 from typing import Dict, Tuple, Optional
-from datetime import datetime
-import sys
+import logging
 
-# Add parent directory to path for dynamic loader
-sys.path.append(str(Path(__file__).parent.parent))
-
-# Try to import dynamic loader (optional for backward compatibility)
-try:
-    from dynamic_model_loader import get_model_version, load_latest_models
-    DYNAMIC_LOADING_AVAILABLE = True
-except ImportError:
-    DYNAMIC_LOADING_AVAILABLE = False
+logger = logging.getLogger(__name__)
 
 
 class QualifyingPredictor:
     """
-    Predict qualifying outcomes with optional dynamic model loading.
+    Qualifying outcome predictor with multiple classification models.
     
-    Features:
-    - Q3 qualification (binary: top 10 or not)
-    - Top 3 finish (binary: podium or not)
-    - Qualifying round (multi-class: Q1/Q2/Q3)
-    - Dynamic model reloading (if enabled)
-    - Historical feature lookup
+    Models:
+    - Q3 Binary: Will driver make Q3 (top 10)?
+    - Top 3 Binary: Will driver finish top 3?
+    - Round Multi-class: Which round will driver reach (Q1/Q2/Q3)?
+    
+    Features robust fallback when historical data is missing.
     """
     
-    def __init__(
-        self, 
-        models_dir: str = "../models",
-        data_dir: str = "../data",
-        use_dynamic_loading: bool = False
-    ):
+    def __init__(self, use_dynamic_loading: bool = False):
         """
         Initialize predictor.
         
         Args:
-            models_dir: Path to models directory
-            data_dir: Path to data directory
-            use_dynamic_loading: Enable dynamic model loading (auto-reload new versions)
+            use_dynamic_loading: If True, use dynamic model loader (always latest version)
         """
-        self.models_dir = Path(models_dir)
-        self.data_dir = Path(data_dir)
-        self.use_dynamic_loading = use_dynamic_loading and DYNAMIC_LOADING_AVAILABLE
+        self.use_dynamic_loading = use_dynamic_loading
         
-        # Dynamic loading state
-        self._current_version = None
-        self._last_reload_check = None
-        self._reload_interval = 60  # Check every 60 seconds
-        
-        # Initialize models
-        if self.use_dynamic_loading:
-            print("🔄 Initializing with DYNAMIC model loading...")
-            self._load_models_dynamic()
-        else:
-            print("📦 Initializing with STATIC model loading...")
-            self._load_models_static()
-        
-        # Load historical data
-        self._load_historical_data()
-        
-        print(f"✅ Predictor ready with {len(self.features)} features")
-    
-    def _load_models_static(self):
-        """Load models statically (once at startup, never reload)."""
-        try:
-            # Load models
-            self.model_q3 = joblib.load(self.models_dir / "q3_classifier.pkl")
-            self.model_top3 = joblib.load(self.models_dir / "top3_classifier.pkl")
-            self.model_q2 = joblib.load(self.models_dir / "round_classifier.pkl")  # Changed from q2
-            
-            # Load metadata
-            metadata_file = self.models_dir / "classification_metadata.json"
-            with open(metadata_file, 'r') as f:
-                self.metadata = json.load(f)
-            
-            self.features = self.metadata['features']
-            
-            print(f"   Loaded 3 models (static mode)")
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to load models: {e}")
-    
-    def _load_models_dynamic(self):
-        """Load models dynamically (can reload when new version available)."""
-        try:
-            # Load latest model version
+        if use_dynamic_loading:
+            from dynamic_model_loader import load_latest_models, get_model_metadata
             models = load_latest_models()
-            
             self.model_q3 = models['q3']
             self.model_top3 = models['top3']
             self.model_q2 = models['round']
+            self.metadata = get_model_metadata()
+            self._current_version = None
+        else:
+            # Static loading
+            from api.config import (
+                MODEL_Q3_PATH, MODEL_TOP3_PATH, MODEL_Q2_PATH,
+                METADATA_PATH, DATA_PATH
+            )
             
-            # Load metadata
-            metadata_file = self.models_dir / "classification_metadata.json"
-            with open(metadata_file, 'r') as f:
+            self.model_q3 = joblib.load(MODEL_Q3_PATH)
+            self.model_top3 = joblib.load(MODEL_TOP3_PATH)
+            self.model_q2 = joblib.load(MODEL_Q2_PATH)
+            
+            with open(METADATA_PATH, 'r') as f:
                 self.metadata = json.load(f)
-            
-            self.features = self.metadata['features']
-            self._current_version = get_model_version()
-            self._last_reload_check = datetime.now()
-            
-            print(f"   Loaded 3 models (dynamic mode): {self._current_version}")
-            
-        except Exception as e:
-            # Fallback to static loading
-            print(f"   ⚠️  Dynamic loading failed, falling back to static: {e}")
-            self._load_models_static()
-            self.use_dynamic_loading = False
+        
+        # Load historical data
+        from api.config import DATA_PATH
+        self.historical_data = pd.read_parquet(DATA_PATH)
+        
+        # Get feature list
+        self.features = self.metadata['features']
+        
+        logger.info(f"✅ Predictor initialized")
+        logger.info(f"   Q3 accuracy: {self.metadata['models']['q3_binary']['accuracy']:.1%}")
+        logger.info(f"   Top3 accuracy: {self.metadata['models']['top3_binary']['accuracy']:.1%}")
+        logger.info(f"   Round accuracy: {self.metadata['models']['q2_multiclass']['accuracy']:.1%}")
+        logger.info(f"   Features: {len(self.features)}")
     
     def reload_if_needed(self, force: bool = False):
         """
-        Check if models need reloading and reload if necessary.
-        
-        Only works if dynamic loading is enabled.
+        Reload models if new version available (dynamic loading only).
         
         Args:
-            force: Force reload even if interval hasn't elapsed
+            force: Force reload even if version hasn't changed
         """
         if not self.use_dynamic_loading:
-            return  # Static loading, no reload
+            return
         
-        # Check if enough time passed since last check
-        now = datetime.now()
-        if not force and self._last_reload_check:
-            elapsed = (now - self._last_reload_check).total_seconds()
-            if elapsed < self._reload_interval:
-                return  # Too soon to check
+        from dynamic_model_loader import get_model_version, load_latest_models, get_model_metadata
         
-        self._last_reload_check = now
+        current = get_model_version()
         
-        # Check if version changed
-        try:
-            current_version = get_model_version()
-            
-            if current_version != self._current_version or force:
-                print(f"🔄 Reloading models: {self._current_version} → {current_version}")
-                self._load_models_dynamic()
-        except Exception as e:
-            print(f"⚠️  Reload check failed: {e}")
+        if force or (self._current_version != current):
+            logger.info(f"🔄 Reloading models: {self._current_version} → {current}")
+            models = load_latest_models()
+            self.model_q3 = models['q3']
+            self.model_top3 = models['top3']
+            self.model_q2 = models['round']
+            self.metadata = get_model_metadata()
+            self._current_version = current
     
-    def _load_historical_data(self):
-        """Load historical feature data for lookups."""
-        try:
-            features_file = self.data_dir / "features/ml_features.parquet"
-            
-            if features_file.exists():
-                self.historical_data = pd.read_parquet(features_file)
-                print(f"   Loaded historical data: {len(self.historical_data)} records")
-            else:
-                print(f"   ⚠️  Historical data not found: {features_file}")
-                # Create empty dataframe with expected columns
-                self.historical_data = pd.DataFrame(columns=self.features + ['driver', 'event', 'year'])
-                
-        except Exception as e:
-            print(f"   ⚠️  Failed to load historical data: {e}")
-            self.historical_data = pd.DataFrame(columns=self.features + ['driver', 'event', 'year'])
-    
-    def _get_historical_features(
-        self,
-        driver: str,
-        circuit: str,
-        year: int
-    ) -> Dict[str, float]:
+    def _get_historical_features(self, driver: str, circuit: str, year: int) -> pd.Series:
         """
-        Lookup historical features for a driver at a circuit.
+        Get historical features for a driver at a specific circuit.
         
-        Args:
-            driver: Driver abbreviation (e.g., "VER")
-            circuit: Circuit name (e.g., "Monza")
-            year: Year
-            
-        Returns:
-            Dictionary of feature values
-        """
-        # Filter to driver's past data (before this year)
-        driver_data = self.historical_data[
-            (self.historical_data['driver'] == driver) &
-            (self.historical_data['year'] < year)
-        ].copy()
+        CRITICAL: This method ALWAYS returns valid features (never None).
         
-        if len(driver_data) == 0:
-            # New driver - use population medians
-            feature_dict = {
-                feat: self.historical_data[feat].median() 
-                for feat in self.features 
-                if feat in self.historical_data.columns
-            }
-        else:
-            # Get most recent values
-            driver_data = driver_data.sort_values('year')
-            latest = driver_data.iloc[-1]
-            
-            feature_dict = {
-                feat: latest[feat] if feat in latest.index else self.historical_data[feat].median()
-                for feat in self.features
-            }
-        
-        return feature_dict
-    
-    def _prepare_features(
-        self,
-        driver: str,
-        circuit: str,
-        year: int,
-        manual_features: Optional[Dict] = None
-    ) -> pd.DataFrame:
-        """
-        Prepare feature vector for prediction.
+        Fallback hierarchy:
+        1. Exact match (driver, circuit, year)
+        2. Driver at this circuit (any year - use most recent)
+        3. Driver at other circuits (same year)
+        4. Driver at other circuits (previous year)
+        5. Median imputation (rookie/new driver baseline)
         
         Args:
             driver: Driver abbreviation
             circuit: Circuit name
             year: Year
-            manual_features: Optional manual feature overrides (weather, etc.)
             
         Returns:
-            DataFrame with single row of features
+            Series with features (ALWAYS returns valid features)
         """
-        # Get historical features
-        feature_dict = self._get_historical_features(driver, circuit, year)
+        # Fallback 1: Exact match
+        filtered = self.historical_data[
+            (self.historical_data['driver'] == driver) &
+            (self.historical_data['event'] == circuit) &
+            (self.historical_data['year'] == year)
+        ]
+        
+        if not filtered.empty:
+            logger.debug(f"✅ Found exact match for {driver} at {circuit} {year}")
+            return filtered.iloc[-1][self.features]
+        
+        # Fallback 2: Same driver at this circuit (any year - use most recent)
+        driver_circuit = self.historical_data[
+            (self.historical_data['driver'] == driver) &
+            (self.historical_data['event'] == circuit)
+        ]
+        
+        if not driver_circuit.empty:
+            most_recent = driver_circuit.nlargest(1, 'year')
+            most_recent_year = most_recent['year'].values[0]
+            logger.warning(f"⚠️  No {year} data for {driver} at {circuit}")
+            logger.info(f"   Using {driver}'s {most_recent_year} data at {circuit}")
+            return most_recent.iloc[0][self.features]
+        
+        # Fallback 3: Driver at other circuits (same year)
+        driver_same_year = self.historical_data[
+            (self.historical_data['driver'] == driver) &
+            (self.historical_data['year'] == year)
+        ]
+        
+        if not driver_same_year.empty:
+            avg_features = driver_same_year[self.features].mean()
+            logger.warning(f"⚠️  No {circuit} history for {driver}")
+            logger.info(f"   Using {driver}'s average from {year} at other circuits")
+            return avg_features
+        
+        # Fallback 4: Driver at other circuits (previous year)
+        driver_prev_year = self.historical_data[
+            (self.historical_data['driver'] == driver) &
+            (self.historical_data['year'] == year - 1)
+        ]
+        
+        if not driver_prev_year.empty:
+            avg_features = driver_prev_year[self.features].mean()
+            logger.warning(f"⚠️  No {year} data for {driver}")
+            logger.info(f"   Using {driver}'s average from {year-1}")
+            return avg_features
+        
+        # Fallback 5: Median imputation (rookie or completely new driver)
+        logger.warning(f"⚠️  No historical data for {driver} anywhere")
+        logger.info(f"   Using population median (rookie/new driver baseline)")
+        median_features = self.historical_data[self.features].median()
+        
+        return median_features
+    
+    def _merge_features(self, historical: pd.Series, manual: Optional[Dict] = None) -> np.ndarray:
+        """
+        Merge historical and manual features.
+        
+        Args:
+            historical: Historical features from data
+            manual: Manual feature overrides (e.g., weather)
+            
+        Returns:
+            Complete feature vector
+        """
+        # Start with historical features
+        features_dict = historical.to_dict()
         
         # Override with manual features if provided
-        if manual_features:
-            for key, value in manual_features.items():
-                if value is not None:
-                    feature_dict[key] = value
+        if manual:
+            for key, value in manual.items():
+                if value is not None and key in features_dict:
+                    features_dict[key] = value
         
-        # Fill any missing features with median
-        for feat in self.features:
-            if feat not in feature_dict or pd.isna(feature_dict[feat]):
-                if feat in self.historical_data.columns:
-                    feature_dict[feat] = self.historical_data[feat].median()
-                else:
-                    feature_dict[feat] = 0.0
+        # Convert to array in correct order
+        feature_array = np.array([features_dict[f] for f in self.features])
         
-        # Create feature vector in correct order
-        return pd.DataFrame([feature_dict])[self.features]
+        # Validate
+        if len(feature_array) != len(self.features):
+            raise ValueError(
+                f"Feature count mismatch: got {len(feature_array)}, expected {len(self.features)}"
+            )
+        
+        return feature_array.reshape(1, -1)
     
     def _get_confidence(self, probability: float) -> str:
         """
-        Convert probability to confidence level.
+        Get confidence level based on probability.
         
         Args:
-            probability: Prediction probability (0-1)
+            probability: Prediction probability
             
         Returns:
-            Confidence level: "high", "medium", or "low"
+            Confidence level: high/medium/low
         """
         if probability >= 0.75 or probability <= 0.25:
             return "high"
-        elif probability >= 0.55 and probability <= 0.45:
+        elif probability >= 0.60 or probability <= 0.40:
             return "medium"
         else:
             return "low"
@@ -280,22 +233,28 @@ class QualifyingPredictor:
             driver: Driver abbreviation
             circuit: Circuit name
             year: Year
-            manual_features: Optional manual features (weather, etc.)
+            manual_features: Manual feature overrides
             
         Returns:
-            (will_make_q3, probability, features_used)
+            Tuple of (will_make_q3, probability, feature_dict)
         """
-        # Prepare features
-        X = self._prepare_features(driver, circuit, year, manual_features)
+        # Get features - NOW ALWAYS RETURNS VALID FEATURES
+        features_series = self._get_historical_features(driver, circuit, year)
+        
+        # Merge with manual features
+        X = self._merge_features(features_series, manual_features)
         
         # Predict
-        prediction = self.model_q3.predict(X)[0]
-        probability = self.model_q3.predict_proba(X)[0][1]  # Probability of class 1 (Q3)
+        probability = float(self.model_q3.predict_proba(X)[0][1])
+        will_make_q3 = bool(probability >= 0.5)
         
-        # Get feature values for explanation
-        features_used = X.iloc[0].to_dict()
+        # Get feature importance
+        if hasattr(self.model_q3, 'feature_importances_'):
+            importance = dict(zip(self.features, self.model_q3.feature_importances_))
+        else:
+            importance = {f: 0.0 for f in self.features}
         
-        return bool(prediction), float(probability), features_used
+        return will_make_q3, probability, importance
     
     def predict_top3(
         self,
@@ -305,28 +264,34 @@ class QualifyingPredictor:
         manual_features: Optional[Dict] = None
     ) -> Tuple[bool, float, Dict]:
         """
-        Predict Top 3 finish in qualifying.
+        Predict Top 3 finish.
         
         Args:
             driver: Driver abbreviation
             circuit: Circuit name
             year: Year
-            manual_features: Optional manual features (weather, etc.)
+            manual_features: Manual feature overrides
             
         Returns:
-            (will_make_top3, probability, features_used)
+            Tuple of (will_make_top3, probability, feature_dict)
         """
-        # Prepare features
-        X = self._prepare_features(driver, circuit, year, manual_features)
+        # Get features - NOW ALWAYS RETURNS VALID FEATURES
+        features_series = self._get_historical_features(driver, circuit, year)
+        
+        # Merge with manual features
+        X = self._merge_features(features_series, manual_features)
         
         # Predict
-        prediction = self.model_top3.predict(X)[0]
-        probability = self.model_top3.predict_proba(X)[0][1]  # Probability of class 1 (Top 3)
+        probability = float(self.model_top3.predict_proba(X)[0][1])
+        will_make_top3 = bool(probability >= 0.5)
         
-        # Get feature values for explanation
-        features_used = X.iloc[0].to_dict()
+        # Get feature importance
+        if hasattr(self.model_top3, 'feature_importances_'):
+            importance = dict(zip(self.features, self.model_top3.feature_importances_))
+        else:
+            importance = {f: 0.0 for f in self.features}
         
-        return bool(prediction), float(probability), features_used
+        return will_make_top3, probability, importance
     
     def predict_round(
         self,
@@ -342,33 +307,35 @@ class QualifyingPredictor:
             driver: Driver abbreviation
             circuit: Circuit name
             year: Year
-            manual_features: Optional manual features (weather, etc.)
+            manual_features: Manual feature overrides
             
         Returns:
-            (predicted_round, probabilities, features_used)
+            Tuple of (predicted_round, probabilities_dict, feature_dict)
         """
-        # Prepare features
-        X = self._prepare_features(driver, circuit, year, manual_features)
+        # Get features - NOW ALWAYS RETURNS VALID FEATURES
+        features_series = self._get_historical_features(driver, circuit, year)
+        
+        # Merge with manual features
+        X = self._merge_features(features_series, manual_features)
         
         # Predict
-        prediction_code = self.model_q2.predict(X)[0]
-        probabilities_array = self.model_q2.predict_proba(X)[0]
+        probabilities = self.model_q2.predict_proba(X)[0]
+        predicted_class = str(self.model_q2.predict(X)[0])
         
-        # Map prediction code to round name
-        round_map = {0: 'Q1', 1: 'Q2', 2: 'Q3'}
-        predicted_round = round_map[prediction_code]
-        
-        # Create probabilities dictionary
-        probabilities = {
-            'Q1': float(probabilities_array[0]),
-            'Q2': float(probabilities_array[1]),
-            'Q3': float(probabilities_array[2])
+        # Map to round names
+        class_names = self.model_q2.classes_
+        prob_dict = {
+            str(class_name): float(prob) 
+            for class_name, prob in zip(class_names, probabilities)
         }
         
-        # Get feature values for explanation
-        features_used = X.iloc[0].to_dict()
+        # Get feature importance
+        if hasattr(self.model_q2, 'feature_importances_'):
+            importance = dict(zip(self.features, self.model_q2.feature_importances_))
+        else:
+            importance = {f: 0.0 for f in self.features}
         
-        return predicted_round, probabilities, features_used
+        return predicted_class, prob_dict, importance
     
     def predict_all(
         self,
@@ -384,130 +351,52 @@ class QualifyingPredictor:
             driver: Driver abbreviation
             circuit: Circuit name
             year: Year
-            manual_features: Optional manual features (weather, etc.)
+            manual_features: Manual feature overrides
             
         Returns:
             Dictionary with all predictions
         """
-        # Prepare features once
-        X = self._prepare_features(driver, circuit, year, manual_features)
-        
         # Q3 prediction
-        q3_pred = self.model_q3.predict(X)[0]
-        q3_prob = self.model_q3.predict_proba(X)[0][1]
+        q3_pred, q3_prob, q3_features = self.predict_q3(
+            driver, circuit, year, manual_features
+        )
         
         # Top 3 prediction
-        top3_pred = self.model_top3.predict(X)[0]
-        top3_prob = self.model_top3.predict_proba(X)[0][1]
+        top3_pred, top3_prob, top3_features = self.predict_top3(
+            driver, circuit, year, manual_features
+        )
         
         # Round prediction
-        round_pred_code = self.model_q2.predict(X)[0]
-        round_probs_array = self.model_q2.predict_proba(X)[0]
+        round_pred, round_probs, round_features = self.predict_round(
+            driver, circuit, year, manual_features
+        )
         
-        round_map = {0: 'Q1', 1: 'Q2', 2: 'Q3'}
-        round_pred = round_map[round_pred_code]
-        
-        round_probs = {
-            'Q1': float(round_probs_array[0]),
-            'Q2': float(round_probs_array[1]),
-            'Q3': float(round_probs_array[2])
-        }
-        
-        # Combine results
         return {
             'q3': {
-                'prediction': bool(q3_pred),
-                'probability': float(q3_prob),
-                'confidence': self._get_confidence(q3_prob)
+                'prediction': q3_pred,
+                'probability': q3_prob,
+                'confidence': self._get_confidence(q3_prob),
+                'top_features': dict(sorted(q3_features.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
             },
             'top3': {
-                'prediction': bool(top3_pred),
-                'probability': float(top3_prob),
-                'confidence': self._get_confidence(top3_prob)
+                'prediction': top3_pred,
+                'probability': top3_prob,
+                'confidence': self._get_confidence(top3_prob),
+                'top_features': dict(sorted(top3_features.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
             },
             'round': {
                 'prediction': round_pred,
                 'probabilities': round_probs,
-                'confidence': self._get_confidence(max(round_probs.values()))
+                'confidence': self._get_confidence(max(round_probs.values())),
+                'top_features': dict(sorted(round_features.items(), key=lambda x: abs(x[1]), reverse=True)[:5])
             }
         }
     
     def get_model_info(self) -> Dict:
-        """
-        Get model information and metadata.
-        
-        Returns:
-            Dictionary with model info
-        """
-        info = {
-            'timestamp': self.metadata.get('timestamp', 'unknown'),
-            'features_count': len(self.features),
-            'models': {},
-            'dynamic_loading': self.use_dynamic_loading
+        """Get model information and metadata."""
+        return {
+            'models': self.metadata['models'],
+            'features': self.features,
+            'feature_count': len(self.features),
+            'timestamp': self.metadata.get('timestamp')
         }
-        
-        # Add model accuracies
-        for model_name, model_info in self.metadata.get('models', {}).items():
-            info['models'][model_name] = {
-                'accuracy': model_info.get('accuracy', 0.0),
-                'baseline': model_info.get('baseline', 0.0)
-            }
-        
-        # Add version if dynamic loading
-        if self.use_dynamic_loading:
-            try:
-                info['active_version'] = get_model_version()
-            except:
-                info['active_version'] = 'unknown'
-        
-        return info
-
-
-# Example usage
-if __name__ == "__main__":
-    # Test predictor
-    print("Testing QualifyingPredictor...\n")
-    
-    # Initialize with dynamic loading
-    predictor = QualifyingPredictor(use_dynamic_loading=True)
-    
-    # Test prediction
-    driver = "VER"
-    circuit = "Monza"
-    year = 2025
-    
-    print(f"\nPredicting for {driver} at {circuit} {year}:")
-    print("-" * 50)
-    
-    # Get all predictions
-    results = predictor.predict_all(
-        driver=driver,
-        circuit=circuit,
-        year=year,
-        manual_features={
-            'avg_rainfall': 0.0,
-            'avg_track_temp': 35.0,
-            'avg_air_temp': 30.0
-        }
-    )
-    
-    # Display results
-    print(f"\nQ3: {results['q3']['prediction']} ({results['q3']['probability']:.1%})")
-    print(f"Top 3: {results['top3']['prediction']} ({results['top3']['probability']:.1%})")
-    print(f"Round: {results['round']['prediction']}")
-    print(f"  Q1: {results['round']['probabilities']['Q1']:.1%}")
-    print(f"  Q2: {results['round']['probabilities']['Q2']:.1%}")
-    print(f"  Q3: {results['round']['probabilities']['Q3']:.1%}")
-    
-    # Model info
-    print("\n" + "="*50)
-    print("Model Information:")
-    print("="*50)
-    info = predictor.get_model_info()
-    for key, value in info.items():
-        if key == 'models':
-            print(f"\nModel Accuracies:")
-            for model_name, model_data in value.items():
-                print(f"  {model_name}: {model_data['accuracy']:.1%}")
-        else:
-            print(f"{key}: {value}")
