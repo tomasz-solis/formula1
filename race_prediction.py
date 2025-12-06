@@ -16,21 +16,24 @@ from typing import Dict, List, Optional
 from pathlib import Path
 import numpy as np
 
+pdir = Path("predictions")
+pdir.mkdir(exist_ok=True, parents=True)
+
 # ============================================================================
 # 🏁 RACE CONFIGURATION - CHANGE THIS FOR EACH RACE
 # ============================================================================
 
 # Current race details
 RACE_CONFIG = {
-    "circuit": "Qatar Grand Prix",  # ← CHANGE THIS (must match data exactly)
+    "circuit": "Abu Dhabi Grand Prix",  # ← CHANGE THIS (must match data exactly)
     "year": 2025,
-    "is_sprint_weekend": True,      # ← CHANGE THIS (True for sprint, False for normal)
+    "is_sprint_weekend": False,      # ← CHANGE THIS (True for sprint, False for normal)
     
     # Weather conditions
     "weather": {
         "avg_rainfall": 0.0,        # ← CHANGE THIS (mm/h)
-        "avg_track_temp": 30.0,     # ← CHANGE THIS (°C)
-        "avg_air_temp": 25.0        # ← CHANGE THIS (°C)
+        "avg_track_temp": 40.0,     # ← CHANGE THIS (°C)
+        "avg_air_temp": 28.0        # ← CHANGE THIS (°C)
     }
 }
 
@@ -76,13 +79,13 @@ TEAM_MAPPING = {
 TEAM_EXPECTED_QUALI_POSITION = {
     "Red Bull": 3.5,      # Still strong but not dominant
     "McLaren": 2.5,       # Fastest car
-    "Ferrari": 4.5,       # Competitive
+    "Ferrari": 5.5,       # Competitive
     "Mercedes": 5.0,      # Improving
-    "Aston Martin": 9.0,  # Midfield
+    "Aston Martin": 7.0,  # Midfield
     "Alpine": 16.0,       # Lower midfield
-    "Williams": 11.5,     # Back of midfield
+    "Williams": 10.5,     # Back of midfield
     "RB": 11.0,           # Midfield
-    "Haas": 11.5,         # Struggling
+    "Haas": 10.0,         # Struggling
     "Sauber": 12.0        # Back markers
 }
 
@@ -610,7 +613,7 @@ def format_predictions(df: pd.DataFrame, config: Dict) -> None:
     
     df_top3 = df.sort_values('top3_probability', ascending=False).reset_index(drop=True)
     for idx, row in df_top3.head(10).iterrows():
-        top3_status = "🥇 YES" if row['will_make_top3'] else "❌ NO"
+        top3_status = "🥇 YES" if idx < 3 else "❌ NO"
         print(f"{idx+1:<5} {row['driver']:<8} {row['team']:<15} {top3_status:<10} {row['top3_probability']:>6.1%}")
     
     print("\n📊 ENHANCEMENTS APPLIED")
@@ -640,8 +643,8 @@ def save_predictions(df: pd.DataFrame, config: Dict):
     circuit_name = config["circuit"].replace(" ", "_").replace("Grand_Prix", "GP")
     filename = f"{circuit_name}_{config['year']}_predictions.csv"
     
-    df.to_csv(filename, index=False)
-    print(f"\n💾 Predictions saved to: {filename}")
+    df.to_csv(f'{pdir}/{filename}', index=False)
+    print(f"\n💾 Predictions saved to: {pdir}/{filename}")
 
 
 # ============================================================================

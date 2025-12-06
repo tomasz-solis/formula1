@@ -1,6 +1,17 @@
 {
-  "timestamp": "2025-12-06T14:27:36.587928",
-  "active_version": "20251206_142736",
+  "version": "20251206_142736",
+  "timestamp": "2025-12-06T14:27:36.533548",
+  "accuracies": {
+    "q3": 0.7664835164835165,
+    "top3": 0.8846153846153846,
+    "round": 0.771978021978022
+  },
+  "improvements": {
+    "q3": 0.7664835164835165,
+    "top3": 0.8846153846153846,
+    "round": 0.771978021978022
+  },
+  "race_count": 92,
   "features": [
     "max_throttle_ratio",
     "brake_max_g",
@@ -50,19 +61,5 @@
     "chicanes",
     "avg_speed_circuit",
     "top_speed_circuit"
-  ],
-  "models": {
-    "q3_binary": {
-      "accuracy": 0.7664835164835165,
-      "baseline": 0.5
-    },
-    "top3_binary": {
-      "accuracy": 0.8846153846153846,
-      "baseline": 0.15
-    },
-    "q2_multiclass": {
-      "accuracy": 0.771978021978022,
-      "baseline": 0.33
-    }
-  }
+  ]
 }

@@ -1006,8 +1006,11 @@ def merge_driver_features_with_targets(
             pd.to_timedelta(driver_profiles['event_order'] * 14, unit='D')
         )
         
+        # Prevents datetime64[ns] → object[Timestamp] corruption in merges/groupby
+        driver_profiles['session_date'] = driver_profiles['session_date'].astype(str)
+        
         driver_profiles = driver_profiles.drop(columns=['event_order'])
-    
+
     # Summary
     print(f"   Merged dataset: {driver_profiles.shape}")
     
