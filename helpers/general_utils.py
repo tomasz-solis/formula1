@@ -2,7 +2,7 @@
 General utilities for the F1 analytics pipeline.
 
 This module provides core infrastructure for F1 data processing including:
-- Session loading with automatic FastF1→OpenF1 fallback
+- Session loading with automatic FastF1OpenF1 fallback
 - Event schedule management and session filtering
 - Weather data extraction
 - Elevation data lookup via Open-Meteo API
@@ -39,10 +39,7 @@ from typing import List, Dict
 from contextlib import contextmanager
 from tqdm import tqdm
 
-
-# =============================================================================
 # LOGGING CONFIGURATION
-# =============================================================================
 
 # Suppress noisy FutureWarnings from fastf1
 warnings.filterwarnings(
@@ -55,10 +52,7 @@ warnings.filterwarnings(
 logging.getLogger("fastf1").setLevel(logging.ERROR)
 logging.getLogger().setLevel(logging.ERROR)
 
-
-# =============================================================================
 # CONTEXT MANAGERS
-# =============================================================================
 
 @contextmanager
 def _suppress_inner_tqdm():
@@ -93,10 +87,7 @@ def _suppress_inner_tqdm():
         # Restore original tqdm constructor
         tqdm_module.__init__ = original
 
-
-# =============================================================================
 # SESSION LOADING AND CACHING
-# =============================================================================
 
 def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]:
     """
@@ -134,13 +125,12 @@ def _session_date_col(event_format: str, event_row: pd.Series) -> dict[str, str]
                 mapping[sym] = f"Session{i}DateUtc"
     return mapping
 
-
 def _official_schedule(year: int) -> pd.DataFrame:
     """
     Get official F1 schedule with multiple backend fallbacks.
     
     Attempts to load schedule using FastF1's backends in order:
-    fastf1 → f1timing → ergast. Each backend may have different
+    fastf1  f1timing  ergast. Each backend may have different
     reliability and data freshness.
 
     Parameters:
@@ -173,7 +163,6 @@ def _official_schedule(year: int) -> pd.DataFrame:
             except Exception as e:
                 print(f"❌ Failed to load event schedule for {year}: {e}")
                 return None
-
 
 def get_expected_sessions(year: int) -> Dict[str, List[str]]:
     """
@@ -214,7 +203,6 @@ def get_expected_sessions(year: int) -> Dict[str, List[str]]:
         event_sessions[key] = valid
     return event_sessions
 
-
 def _session_list(event_format: str) -> List[str]:
     """
     Map event format to list of session codes for data collection.
@@ -240,7 +228,6 @@ def _session_list(event_format: str) -> List[str]:
         return ["FP1", "Q", "FP2", "S", "R"]
     # Default conventional format
     return ["FP1", "FP2", "FP3", "Q", "R"]
-
 
 def _sessions_completed(format_type: str,
                         fp1_utc: datetime,
@@ -284,7 +271,6 @@ def _sessions_completed(format_type: str,
     # Return labels whose scheduled time ≤ now
     return [label for label, offset in mapping[key] if (fp1_utc + timedelta(hours=offset)) <= now]
 
-
 def _completed_sessions(schedule: pd.DataFrame,
                         now: datetime) -> List[tuple[int,str,str]]:
     """
@@ -318,7 +304,6 @@ def _completed_sessions(schedule: pd.DataFrame,
             todo.append((year_tag, name, ses))
             
     return todo
-
 
 # Generic loaders                   
 def load_session(year: int, event_name: str, session_name: str) -> dict:
@@ -378,7 +363,7 @@ def load_session(year: int, event_name: str, session_name: str) -> dict:
 
     # Fallback to OpenF1 API for lap times
     try:
-        print("🔄 Falling back to OpenF1 API...")
+        print("Falling back to OpenF1 API...")
         api_session_name = session_map.get(session_name, session_name)
         url = "https://api.openf1.org/v1/lap_times"
         params = {"year": year, "session": api_session_name}
@@ -403,7 +388,6 @@ def load_session(year: int, event_name: str, session_name: str) -> dict:
             "status": "error",
             "reason": str(e)
         }
-
 
 def get_weather_info(session, year: int, event_name: str, session_name: str) -> dict:
     """
@@ -459,7 +443,6 @@ def get_weather_info(session, year: int, event_name: str, session_name: str) -> 
             "rain_detected": np.nan
         }
 
-
 @functools.lru_cache(maxsize=None)
 def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float:
     """
@@ -493,10 +476,7 @@ def get_elevation(latitude: float, longitude: float, timeout: int = 10) -> float
 
     return payload["elevation"][0]           # note: array, not dict
 
-
-# =============================================================================
 # PROFILE FILE MANAGEMENT
-# =============================================================================
 
 def is_update_needed(cache_path: str, season: int = datetime.now(timezone.utc).year) -> bool:
     """
@@ -505,10 +485,10 @@ def is_update_needed(cache_path: str, season: int = datetime.now(timezone.utc).y
     Checks if we're within a race weekend or near the next race start.
 
     Logic:
-        1. If file doesn't exist → True
-        2. If within ongoing race-weekend → True
-        3. If within 6h before next FP1 → True
-        4. Otherwise → False
+        1. If file doesn't exist  True
+        2. If within ongoing race-weekend  True
+        3. If within 6h before next FP1  True
+        4. Otherwise  False
         
     Args:
         cache_path: Path to cache CSV file
@@ -521,7 +501,7 @@ def is_update_needed(cache_path: str, season: int = datetime.now(timezone.utc).y
         >>> if is_update_needed('data/driver/2024_driver_profiles.csv', 2024):
         ...     print("Updating cache...")
     """
-    # missing cache → definitely rebuild 
+    # missing cache  definitely rebuild 
     if not os.path.exists(cache_path):
         return True
 
@@ -609,9 +589,9 @@ def update_profiles_file(
         if not missing_sessions:
             continue  # No new sessions for this year
         
-        print(f"📥 Adding {len(missing_sessions)} missing session(s) for {year}...")
+        print(f"Adding {len(missing_sessions)} missing session(s) for {year}...")
         for ev_name, sess_label in missing_sessions:
-            print(f"   → {ev_name} {sess_label}")
+            print(f"{ev_name} {sess_label}")
 
         try:
             # BUILD ALL MISSING SESSIONS IN ONE CALL
@@ -682,9 +662,9 @@ def update_profiles_file(
             # VALIDATION: Only add if data was extracted
             if not df_ok.empty:
                 new_chunks.append(df_ok)
-                print(f"   ✅ Extracted {len(df_ok)} row(s)")
+                print(f"✅ Extracted {len(df_ok)} row(s)")
             else:
-                print(f"   ⚠️  No data available (likely DNS/no telemetry)")
+                print(f"⚠️  No data available (likely DNS/no telemetry)")
                 # Mark all as skipped
                 for ev_name, sess_label in missing_sessions:
                     skipped.append({
@@ -720,7 +700,7 @@ def update_profiles_file(
         print(f"✅ Added {total} row(s).")
         return updated, pd.DataFrame(skipped)
 
-    print("ℹ️  No new sessions to append.")
+    print("No new sessions to append.")
     return existing, pd.DataFrame(skipped)
     
     
@@ -781,9 +761,9 @@ def load_or_build_profiles(
         cache_path = f"data/{file_type}/{year}_{file_type}_profiles.csv"
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
 
-        # 1) If no cache → build from scratch
+        # 1) If no cache  build from scratch
         if not os.path.exists(cache_path):
-            print(f"📂 No cache for {year}. Rebuilding...")
+            print(f"No cache for {year}. Rebuilding...")
 
             if file_type == "circuit" and only_specific:
                 from .circuit_utils import _build_circuit_profile_df
@@ -837,7 +817,6 @@ def load_or_build_profiles(
 
     return df_all, skipped_all
 
-
 def ensure_year_dir(year: int, subdir: str = "data") -> str:
     """
     Create (if needed) and return a directory for a given year under subdir.
@@ -857,7 +836,6 @@ def ensure_year_dir(year: int, subdir: str = "data") -> str:
     year_path = os.path.join(subdir, str(year))
     os.makedirs(year_path, exist_ok=True)
     return year_path
-
 
 def load_classifications(
     start_year: int = 2022,
@@ -898,7 +876,6 @@ def load_classifications(
 
     return quali_df, race_df
 
-
 def merge_driver_features_with_targets(
     driver_profiles: pd.DataFrame,
     start_year: int = 2022,
@@ -936,18 +913,16 @@ def merge_driver_features_with_targets(
     race_df = pd.concat(race_dfs, ignore_index=True) if race_dfs else pd.DataFrame()
     
     if quali_df.empty and race_df.empty:
-        print("   ⚠️  No classification data found!")
+        print("⚠️  No classification data found!")
         return pd.DataFrame()
     
     from helpers.team_name_mapping import normalize_team_column
     quali_df = normalize_team_column(quali_df, col='team')
     race_df = normalize_team_column(race_df, col='team')
 
-    print(f"   Loaded {len(quali_df) + len(race_df):,} classification records")
+    print(f"Loaded {len(quali_df) + len(race_df):,} classification records")
     
-    # ========================================================================
     # CRITICAL: Get team from classification data
-    # ========================================================================
     # Combine qualifying and race to get team information
     team_lookup = pd.DataFrame()
     
@@ -972,7 +947,7 @@ def merge_driver_features_with_targets(
             on=['year', 'event', 'driver'],
             how='left'
         )
-        print(f"   Added team information")
+        print(f"Added team information")
     
     # Now merge positions
     if not quali_df.empty:
@@ -993,7 +968,7 @@ def merge_driver_features_with_targets(
     
     # Add session dates
     if 'session_date' not in driver_profiles.columns:
-        print("   📅 Adding session dates...")
+        print("Adding session dates...")
         
         driver_profiles = driver_profiles.sort_values(['year', 'event'])
         
@@ -1006,25 +981,25 @@ def merge_driver_features_with_targets(
             pd.to_timedelta(driver_profiles['event_order'] * 14, unit='D')
         )
         
-        # Prevents datetime64[ns] → object[Timestamp] corruption in merges/groupby
+        # Prevents datetime64[ns]  object[Timestamp] corruption in merges/groupby
         driver_profiles['session_date'] = driver_profiles['session_date'].astype(str)
         
         driver_profiles = driver_profiles.drop(columns=['event_order'])
 
     # Summary
-    print(f"   Merged dataset: {driver_profiles.shape}")
+    print(f"Merged dataset: {driver_profiles.shape}")
     
     with_positions = (
         driver_profiles['qualifying_position'].notna() | 
         driver_profiles['race_position'].notna()
     ).sum()
     
-    print(f"   Sessions with positions: {with_positions:,}")
+    print(f"Sessions with positions: {with_positions:,}")
     
     if 'team' in driver_profiles.columns:
         teams_count = driver_profiles['team'].nunique()
-        print(f"   Teams represented: {teams_count}")
+        print(f"Teams represented: {teams_count}")
     else:
-        print(f"   Teams represented: N/A (column missing)")
+        print(f"Teams represented: N/A (column missing)")
     
     return driver_profiles

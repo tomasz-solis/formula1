@@ -15,7 +15,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class QualifyingPredictor:
     """
     Qualifying outcome predictor with multiple classification models.
@@ -87,7 +86,7 @@ class QualifyingPredictor:
         current = get_model_version()
         
         if force or (self._current_version != current):
-            logger.info(f"🔄 Reloading models: {self._current_version} → {current}")
+            logger.info(f" Reloading models: {self._current_version}  {current}")
             models = load_latest_models()
             self.model_q3 = models['q3']
             self.model_top3 = models['top3']

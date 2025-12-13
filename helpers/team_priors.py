@@ -31,10 +31,7 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
 # TEAM BASELINE COMPUTATION
-# =============================================================================
 
 def compute_team_baselines(
     df: pd.DataFrame,
@@ -130,7 +127,6 @@ def compute_team_baselines(
     
     return baselines
 
-
 def save_team_baselines(baselines: Dict, filepath: str) -> None:
     """
     Save team baselines to JSON file.
@@ -145,8 +141,7 @@ def save_team_baselines(baselines: Dict, filepath: str) -> None:
     with open(filepath, 'w') as f:
         json.dump(baselines, f, indent=2)
     
-    logger.info(f"💾 Saved team baselines to {filepath}")
-
+    logger.info(f" Saved team baselines to {filepath}")
 
 def load_team_baselines(filepath: str) -> Dict:
     """
@@ -167,14 +162,11 @@ def load_team_baselines(filepath: str) -> Dict:
     with open(filepath, 'r') as f:
         baselines = json.load(f)
     
-    logger.info(f"📂 Loaded baselines for {len(baselines)} teams")
+    logger.info(f" Loaded baselines for {len(baselines)} teams")
     
     return baselines
 
-
-# =============================================================================
 # FEATURE FILLING
-# =============================================================================
 
 def fill_rookie_features(
     features: Dict[str, Any],
@@ -321,7 +313,6 @@ def fill_rookie_features(
     
     return features
 
-
 def fill_features_batch(
     df: pd.DataFrame,
     team_baselines: Dict[str, Dict[str, float]],
@@ -371,10 +362,7 @@ def fill_features_batch(
     
     return df
 
-
-# =============================================================================
 # VALIDATION & DIAGNOSTICS
-# =============================================================================
 
 def validate_team_baselines(baselines: Dict) -> bool:
     """
@@ -405,12 +393,11 @@ def validate_team_baselines(baselines: Dict) -> bool:
     if issues:
         logger.warning("Team baseline validation issues:")
         for issue in issues:
-            logger.warning(f"  - {issue}")
+            logger.warning(f" - {issue}")
         return False
     
     logger.info("✅ Team baselines validation passed")
     return True
-
 
 def compare_filling_strategies(
     df: pd.DataFrame,
@@ -460,17 +447,14 @@ def compare_filling_strategies(
     
     comparison_df = pd.DataFrame(results)
     
-    logger.info(f"\n📊 Filling Strategy Comparison for {feature_name}:")
-    logger.info(f"   Global median: {global_median:.1f}")
-    logger.info(f"   Team-based range: {comparison_df['team_based'].min():.1f} - {comparison_df['team_based'].max():.1f}")
-    logger.info(f"   Average difference: {comparison_df['difference'].abs().mean():.1f} positions")
+    logger.info(f"\n Filling Strategy Comparison for {feature_name}:")
+    logger.info(f"  Global median: {global_median:.1f}")
+    logger.info(f"  Team-based range: {comparison_df['team_based'].min():.1f} - {comparison_df['team_based'].max():.1f}")
+    logger.info(f"  Average difference: {comparison_df['difference'].abs().mean():.1f} positions")
     
     return comparison_df
 
-
-# =============================================================================
 # MAIN WORKFLOW
-# =============================================================================
 
 def generate_and_save_baselines(
     training_data_path: str,
@@ -495,10 +479,10 @@ def generate_and_save_baselines(
         ... )
         INFO - Loaded 1888 rows
         INFO - ✅ Computed baselines for 10 teams
-        INFO - 💾 Saved team baselines to models/team_baselines.json
+        INFO -  Saved team baselines to models/team_baselines.json
     """
     # Load training data
-    logger.info(f"📂 Loading training data from {training_data_path}")
+    logger.info(f" Loading training data from {training_data_path}")
     
     if training_data_path.endswith('.parquet'):
         df = pd.read_parquet(training_data_path)
@@ -513,7 +497,7 @@ def generate_and_save_baselines(
             .map(TEAM_NAME_MAP)
             .fillna(df['team'].astype(str).str.upper())
     )
-    logger.info(f"   Loaded {len(df)} rows")
+    logger.info(f"  Loaded {len(df)} rows")
     
     # Compute baselines
     baselines = compute_team_baselines(df, lookback_years=lookback_years)
@@ -525,7 +509,6 @@ def generate_and_save_baselines(
     save_team_baselines(baselines, output_path)
     
     return baselines
-
 
 if __name__ == "__main__":
     """

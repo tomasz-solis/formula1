@@ -9,9 +9,7 @@ import argparse
 import logging
 import warnings
 
-# ============================================================================
 # LOGGING CONFIGURATION
-# ============================================================================
 # Suppress noisy warnings (cache is working, just being verbose)
 logging.getLogger('requests_cache.session').setLevel(logging.ERROR)
 logging.getLogger('ergast_py').setLevel(logging.ERROR)
@@ -23,9 +21,7 @@ warnings.filterwarnings(
     message=".*Setting an item of incompatible dtype is deprecated.*"
 )
 
-# ============================================================================
 # MAIN IMPORTS
-# ============================================================================
 import fastf1 as ff1
 import os
 import pandas as pd
@@ -39,7 +35,6 @@ from helpers.auto_retrain import auto_retrain_if_needed
 cache_dir = "data/.fastf1_cache"
 os.makedirs(cache_dir, exist_ok=True)
 ff1.Cache.enable_cache(cache_dir)
-
 
 def run_pipeline(
     from_year: int,
@@ -63,10 +58,10 @@ def run_pipeline(
         gp_name: If specified, only build circuit profiles for this Grand Prix.
         build_features: If True, compute historical features after profiles (default: True)
     """
-    print(f"🏁 Running pipeline from {from_year} to {to_year}")
+    print(f"Running pipeline from {from_year} to {to_year}")
 
     # 1) Circuit profiles
-    print("\n🛣️  Processing circuit profiles...")
+    print("\n  Processing circuit profiles...")
     df_circuit, skipped_circuit = load_or_build_profiles(
         file_type="circuit",
         start_year=from_year,
@@ -76,7 +71,7 @@ def run_pipeline(
     print(f"✅ Circuit profiles shape: {df_circuit.shape}")
 
     # 2) Driver profiles
-    print("\n🏎️  Processing driver profiles...")
+    print("\n  Processing driver profiles...")
     df_driver, skipped_driver = load_or_build_profiles(
         file_type="driver",
         start_year=from_year,
@@ -85,7 +80,7 @@ def run_pipeline(
     print(f"✅ Driver profiles shape: {df_driver.shape}")
 
     # 3) Driver timing profiles
-    print("\n⏱️  Processing driver timing profiles...")
+    print("\n  Processing driver timing profiles...")
     df_timing, skipped_timing = load_or_build_profiles(
         file_type="driver_timing",
         start_year=from_year,
@@ -94,7 +89,7 @@ def run_pipeline(
     print(f"✅ Driver timing profiles shape: {df_timing.shape}")
 
     # 4) Export classifications (append-only for ALL seasons)
-    print("\n📤 Exporting classifications (append-only, all seasons)...\n")
+    print("\n Exporting classifications (append-only, all seasons)...\n")
     res_by_season = export_completed_classifications_csv_range(
         start_year=from_year,
         end_year=to_year,
@@ -103,7 +98,7 @@ def run_pipeline(
     )
 
     for season, res in sorted(res_by_season.items()):
-        print(f"\n  📅 Season {season}")
+        print(f"\n   Season {season}")
         for sess_type, r in res.items():
             where = f" ({r.written_path})" if r.written_path else ""
             
@@ -122,11 +117,11 @@ def run_pipeline(
             else:
                 status_icon = "  "
                 
-            print(f"    {status_icon} {sess_type:18s} → {r.status}{where}")
+            print(f"{status_icon} {sess_type:18s}  {r.status}{where}")
 
     # 5) Compute historical features (optional)
     if build_features:
-        print("\n🔮 Computing historical features for ML...")
+        print("\n Computing historical features for ML...")
         
         try:
             features_df = compute_historical_features(
@@ -139,8 +134,8 @@ def run_pipeline(
                 end_year=to_year 
             )
             
-            # 🔧 FIX: Convert datetime columns to strings for Parquet compatibility
-            print("🔧 Converting datetime columns for Parquet compatibility...")
+            #  FIX: Convert datetime columns to strings for Parquet compatibility
+            print("Converting datetime columns for Parquet compatibility...")
             
             # Get datetime64 columns
             datetime_cols = features_df.select_dtypes(include=['datetime64']).columns.tolist()
@@ -158,7 +153,7 @@ def run_pipeline(
             # Convert to strings
             for col in datetime_cols:
                 features_df[col] = features_df[col].astype(str)
-                print(f"   ✅ Converted {col} to string")
+                print(f"✅ Converted {col} to string")
             
             # Save to cache
             features_dir = "data/features"
@@ -177,10 +172,10 @@ def run_pipeline(
             )
             
             print(f"✅ Historical features shape: {features_df.shape}")
-            print(f"💾 Saved to: {features_file}")
+            print(f"Saved to: {features_file}")
             
             # Print feature summary
-            print("\n📊 Feature Summary:")
+            print("\n Feature Summary:")
             historical_cols = [
                 'circuit_avg_position', 'circuit_best_position',
                 'recent_avg_position', 'form_trend',
@@ -190,26 +185,25 @@ def run_pipeline(
             
             available_features = [col for col in historical_cols if col in features_df.columns]
             
-            print(f"   Total columns: {len(features_df.columns)}")
-            print(f"   Historical features: {len(available_features)}")
-            print(f"   Sample size: {len(features_df):,} driver-sessions")
+            print(f"Total columns: {len(features_df.columns)}")
+            print(f"Historical features: {len(available_features)}")
+            print(f"Sample size: {len(features_df):,} driver-sessions")
             
             # Show missingness
             missing_pct = features_df[available_features].isnull().mean() * 100
             print("\n   Missing data by feature:")
             for feat, pct in missing_pct.items():
                 if pct > 0:
-                    print(f"     {feat:30s}: {pct:5.1f}%")
+                    print(f"{feat:30s}: {pct:5.1f}%")
             
         except Exception as e:
             print(f"⚠️  Failed to compute historical features: {e}")
-            print("   Continuing without features...")
+            print("Continuing without features...")
             # Print full traceback for debugging
             import traceback
             traceback.print_exc()
 
-    print("\n🎉 Pipeline complete!")
-
+    print("\n Pipeline complete!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -243,9 +237,7 @@ if __name__ == "__main__":
     )
 
     # AUTO-RETRAIN: Check for new data and retrain if needed
-    print("\n" + "="*80)
-    print("🤖 CHECKING FOR AUTO-RETRAINING...")
-    print("="*80)
+    print("CHECKING FOR AUTO-RETRAINING...")
     
     result = auto_retrain_if_needed(
         features_file="data/features/ml_features.parquet"
@@ -253,12 +245,11 @@ if __name__ == "__main__":
     
     if result['status'] == 'deployed':
         print("\n✅ NEW MODEL VERSION DEPLOYED!")
-        print(f"   Version: v{result['version']}")
-        print(f"   Improvements:")
+        print(f"Version: v{result['version']}")
+        print(f"Improvements:")
         for model, improvement in result['comparison']['improvements'].items():
-            print(f"      {model}: {improvement:+.2%}")
+            print(f"{model}: {improvement:+.2%}")
     
     elif result['status'] == 'skipped':
         print(f"\n⏭️  {result['reason']}")
     
-    print("="*80)

@@ -42,10 +42,7 @@ from sklearn.linear_model import LinearRegression
 from scipy.spatial import cKDTree
 from .general_utils import _official_schedule, _completed_sessions, load_session
 
-
-# =============================================================================
 # FASTF1 MONKEY PATCHES
-# =============================================================================
 #
 # These patches disable problematic FastF1 features that frequently fail
 # when telemetry or position data is incomplete:
@@ -60,7 +57,6 @@ from .general_utils import _official_schedule, _completed_sessions, load_session
 #
 # These no-op patches prevent crashes while maintaining core functionality.
 # All patches are applied at module import time.
-# =============================================================================
 
 # 1) No-op the driver-ahead code so lap.get_telemetry() never fails:
 f1core.Telemetry.add_driver_ahead       = lambda self, *a, **k: self
@@ -69,10 +65,7 @@ f1core.Telemetry.calculate_driver_ahead = lambda self, *a, **k: None
 # 2) No-op the marker-distance code so get_circuit_info() never fails:
 f1core.CircuitInfo.add_marker_distance  = lambda self, *a, **k: None
 
-
-# =============================================================================
 # WARNING SUPPRESSION
-# =============================================================================
 
 # Suppress specific FutureWarnings from fastf1
 warnings.filterwarnings(
@@ -82,10 +75,7 @@ warnings.filterwarnings(
     module="fastf1"
 )
 
-
-# =============================================================================
 # DRIVER CHARACTERISTICS PER SESSION
-# =============================================================================
 
 def get_driver_max_throttle_ratio(
     session,
@@ -211,7 +201,6 @@ def get_driver_max_throttle_ratio(
         
         return None, missing
 
-
 def _compute_degradation(session, driver: str) -> Optional[Dict[str, float]]:
     """
     Estimate tire degradation slope from lap time evolution.
@@ -258,7 +247,6 @@ def _compute_degradation(session, driver: str) -> Optional[Dict[str, float]]:
         'degradation_slope': slope
     }
 
-
 def estimate_tire_degradation(
     session,
     year: int,
@@ -289,7 +277,6 @@ def estimate_tire_degradation(
             results[drv] = info
     return results
 
-
 def _compute_drs_for_driver(
     session,
     driver: str,
@@ -299,7 +286,7 @@ def _compute_drs_for_driver(
     Count DRS flap-open activations on the driver's fastest lap.
     
     Checks bit-2 of DRS telemetry channel for flap-open state, counts
-    rising-edge transitions (0→1) which indicate DRS activation.
+    rising-edge transitions (01) which indicate DRS activation.
 
     Args:
         session: Loaded FastF1 session
@@ -334,7 +321,6 @@ def _compute_drs_for_driver(
 
     return int(activations)
 
-
 def count_drs_activations(session, year: int, session_name: str) -> Dict[str, float]:
     """
     Count DRS activations per driver for all drivers in the session.
@@ -363,7 +349,6 @@ def count_drs_activations(session, year: int, session_name: str) -> Dict[str, fl
             failures.append(driver)
 
     return counts
-
 
 def _compute_braking_metric(
     session,
@@ -407,7 +392,6 @@ def _compute_braking_metric(
         "brake_avg_g": tel["decel"].mean(skipna=True) / 9.81,
     }
 
-
 def braking_intensity(
     session,
     year: int,
@@ -438,10 +422,7 @@ def braking_intensity(
             intensities[driver] = {}
     return intensities
 
-
-# =============================================================================
 # MAIN GENERAL DRIVER FEATURE WRAPPER
-# =============================================================================
     
 def get_all_driver_features(
     session,
@@ -535,10 +516,7 @@ def get_all_driver_features(
 
     return df.reset_index(drop=True)
 
-
-# =============================================================================
 # MAIN WRAPPER FOR SEASON-WIDE PROFILE BUILDING
-# =============================================================================
 
 def _build_driver_profile_df(
     start_year: int,
@@ -616,10 +594,7 @@ def _build_driver_profile_df(
 
     return df_profiles, df_skipped
 
-
-# =============================================================================
 # DETAILED TELEMETRY FUNCTIONS
-# =============================================================================
 
 def get_corner_area(
     session,
@@ -692,7 +667,6 @@ def get_corner_area(
     corner_numbers = np.arange(1, len(apex_distances) + 1)
     
     return dict(zip(corner_numbers, apex_distances))
-
 
 def get_detailed_lap_telemetry(
     lap,
@@ -848,7 +822,6 @@ def get_detailed_lap_telemetry(
             print(f"⚠️ get_detailed_lap_telemetry failed on lap {lap.LapNumber}: {e}")
         return pd.DataFrame()
 
-
 def _build_detailed_telemetry(
     session,
     debug: bool = False
@@ -903,7 +876,6 @@ def _build_detailed_telemetry(
 
     return pd.concat(all_data, ignore_index=True)
 
-
 def _build_driver_timing_profiles(
     start_year: int,
     end_year: int,
@@ -953,7 +925,7 @@ def _build_driver_timing_profiles(
 
     # Build missing sessions and write parquet files
     if to_build:
-        print(f"📦 Building {len(to_build)} missing timing profile(s)...")
+        print(f"Building {len(to_build)} missing timing profile(s)...")
         
     for yr, ev_name, sess_label in tqdm(
         to_build, 

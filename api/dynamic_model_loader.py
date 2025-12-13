@@ -15,7 +15,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 class DynamicModelLoader:
     """
     Loads the latest model version dynamically.
@@ -64,7 +63,7 @@ class DynamicModelLoader:
         # Check if version changed
         current_version = self.get_active_version()
         if current_version != self._cached_version:
-            logger.info(f"🔄 New model version detected: {self._cached_version} → {current_version}")
+            logger.info(f" New model version detected: {self._cached_version}  {current_version}")
             return True
         
         return False
@@ -86,7 +85,7 @@ class DynamicModelLoader:
         # Get active version
         version = self.get_active_version()
         
-        logger.info(f"📦 Loading models: {version}")
+        logger.info(f" Loading models: {version}")
         
         # Load models
         models = {
@@ -123,7 +122,6 @@ class DynamicModelLoader:
         metadata = self.get_metadata()
         return metadata.get('features', [])
 
-
 # Global instance (singleton)
 _model_loader = None
 
@@ -134,25 +132,21 @@ def get_model_loader() -> DynamicModelLoader:
         _model_loader = DynamicModelLoader()
     return _model_loader
 
-
 # Convenience functions for API
 def load_latest_models() -> dict:
     """Load latest model version."""
     loader = get_model_loader()
     return loader.load_models()
 
-
 def get_model_version() -> str:
     """Get current model version."""
     loader = get_model_loader()
     return loader.get_active_version()
 
-
 def get_model_metadata() -> dict:
     """Get model metadata."""
     loader = get_model_loader()
     return loader.get_metadata()
-
 
 # Example usage in API
 if __name__ == "__main__":
@@ -163,9 +157,9 @@ if __name__ == "__main__":
     print(f"✅ Loaded {len(models)} models")
     
     version = get_model_version()
-    print(f"📦 Active version: {version}")
+    print(f"Active version: {version}")
     
     metadata = get_model_metadata()
-    print(f"📊 Model accuracies:")
+    print(f"Model accuracies:")
     for model_name, model_info in metadata.get('models', {}).items():
-        print(f"   {model_name}: {model_info.get('accuracy', 0):.1%}")
+        print(f"{model_name}: {model_info.get('accuracy', 0):.1%}")

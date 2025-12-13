@@ -27,9 +27,7 @@ import numpy as np
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Final
 
-# =============================================================================
 # CONFIGURATION & CONSTANTS
-# =============================================================================
 
 # Logging configuration
 logging.basicConfig(
@@ -81,10 +79,7 @@ MAX_THROTTLE_RATIO: Final[float] = 1.0
 MIN_QUALIFYING_POSITION: Final[int] = 1
 MAX_QUALIFYING_POSITION: Final[int] = 20
 
-
-# =============================================================================
 # INPUT VALIDATION FUNCTIONS
-# =============================================================================
 
 def validate_years(years: List[int]) -> None:
     """
@@ -114,7 +109,6 @@ def validate_years(years: List[int]) -> None:
     
     logger.debug("Years validation passed: %s", years)
 
-
 def validate_dataframe_columns(
     df: pd.DataFrame,
     required_columns: List[str],
@@ -140,10 +134,7 @@ def validate_dataframe_columns(
     
     logger.debug("%s validation passed: %d columns", context, len(df.columns))
 
-
-# =============================================================================
 # DATA LOADING FUNCTIONS
-# =============================================================================
 
 def load_driver_profiles(years: List[int]) -> pd.DataFrame:
     """
@@ -216,7 +207,6 @@ def load_driver_profiles(years: List[int]) -> pd.DataFrame:
     
     return combined
 
-
 def load_circuit_profiles(years: List[int]) -> pd.DataFrame:
     """
     Load and concatenate circuit characteristic profiles across multiple seasons.
@@ -275,7 +265,6 @@ def load_circuit_profiles(years: List[int]) -> pd.DataFrame:
     logger.info("Total circuit sessions: %d", len(combined))
     
     return combined
-
 
 def load_qualifying_results(years: List[int]) -> pd.DataFrame:
     """
@@ -386,10 +375,7 @@ def load_qualifying_results(years: List[int]) -> pd.DataFrame:
     
     return combined
 
-
-# =============================================================================
 # DATA MERGING FUNCTIONS
-# =============================================================================
 
 def merge_driver_circuit_data(
     drivers: pd.DataFrame,
@@ -452,7 +438,7 @@ def merge_driver_circuit_data(
     # Validate merge didn't lose rows
     if len(merged) != len(drivers):
         logger.error(
-            "Merge changed row count: %d → %d",
+            "Merge changed row count: %d  %d",
             len(drivers), len(merged)
         )
         raise RuntimeError(
@@ -471,7 +457,6 @@ def merge_driver_circuit_data(
     logger.info("✅ Merged shape: %s", merged.shape)
     
     return merged
-
 
 def merge_with_qualifying_results(
     features: pd.DataFrame,
@@ -573,7 +558,6 @@ def merge_with_qualifying_results(
     
     return merged
 
-
 def compute_circuit_overtaking_features(
     df: pd.DataFrame,
     lookback_years: int = 3
@@ -660,7 +644,6 @@ def compute_circuit_overtaking_features(
     
     return pd.DataFrame(results)
 
-
 def compute_driver_overtaking_skill(
     df: pd.DataFrame,
     lookback_years: int = 3
@@ -730,10 +713,7 @@ def compute_driver_overtaking_skill(
     
     return pd.DataFrame(results)
 
-
-# =============================================================================
 # FEATURE AGGREGATION FUNCTION
-# =============================================================================
 
 def aggregate_practice_sessions(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -824,7 +804,6 @@ def aggregate_practice_sessions(df: pd.DataFrame) -> pd.DataFrame:
     
     return result
 
-
 def _aggregate_single_driver_race(
     year: int,
     event: str,
@@ -902,7 +881,6 @@ def _aggregate_single_driver_race(
     
     return row
 
-
 def _add_sprint_weekend_features(
     row: Dict[str, Any],
     group: pd.DataFrame
@@ -943,7 +921,6 @@ def _add_sprint_weekend_features(
     row['fp3_brake_max_g'] = np.nan
     
     return row
-
 
 def _add_normal_weekend_features(
     row: Dict[str, Any],
@@ -987,9 +964,7 @@ def _add_normal_weekend_features(
     
     return row
 
-# =============================================================================
 # DATA CLEANING FUNCTIONS
-# =============================================================================
 
 def fix_missing_circuit_data(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1112,10 +1087,7 @@ def fix_missing_circuit_data(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-
-# =============================================================================
 # HISTORICAL FEATURES (PLACEHOLDER)
-# =============================================================================
 
 def add_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -1155,10 +1127,7 @@ def add_historical_features(df: pd.DataFrame) -> pd.DataFrame:
     # Implementation pending - Phase 2
     return df
 
-
-# =============================================================================
 # MAIN PIPELINE ORCHESTRATOR
-# =============================================================================
 
 def prepare_qualifying_dataset(
     years: List[int] = [2022, 2023, 2024]
@@ -1227,7 +1196,7 @@ def prepare_qualifying_dataset(
         0  # Zero missing values after imputation
     
     Notes:
-        - Output is deterministic (same input → same output)
+        - Output is deterministic (same input  same output)
         - Safe to re-run (idempotent pipeline)
         - Handles sprint vs normal weekends automatically
         - Drops drivers without qualifying results (DNS/DSQ cases)
@@ -1325,14 +1294,9 @@ def prepare_qualifying_dataset(
         logger.error("Pipeline failed: %s", str(e), exc_info=True)
         raise
 
-
-# =============================================================================
 # COMMAND-LINE INTERFACE
-# =============================================================================
 
-# =============================================================================
 # COMMAND-LINE INTERFACE
-# =============================================================================
 
 def parse_arguments():
     """
@@ -1406,7 +1370,6 @@ Examples:
     
     return parser.parse_args()
 
-
 if __name__ == "__main__":
     """
     Command-line interface for generating ML features.
@@ -1448,7 +1411,7 @@ if __name__ == "__main__":
         
         # Show summary statistics
         if not args.quiet:
-            logger.info("\n📊 Dataset Summary:")
+            logger.info("\n Dataset Summary:")
             logger.info("   Shape: %s", df.shape)
             logger.info("\n   Rows per year:")
             for year, count in df.groupby('year').size().items():
@@ -1473,7 +1436,7 @@ if __name__ == "__main__":
         df.to_csv(output_path, index=False)
         
         if not args.quiet:
-            logger.info("\n💾 Saved to: %s", output_path.absolute())
+            logger.info("\n Saved to: %s", output_path.absolute())
             logger.info("   File size: %.2f MB", output_path.stat().st_size / 1_000_000)
         
         logger.info("\n✅ Feature engineering complete!")

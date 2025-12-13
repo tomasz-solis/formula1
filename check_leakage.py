@@ -12,7 +12,7 @@ def check_leakage():
     """Check for potential data leakage in the feature dataset."""
     
     print("=" * 70)
-    print("🔍 DATA LEAKAGE DETECTION")
+    print("DATA LEAKAGE DETECTION")
     print("=" * 70)
     
     # Load the features
@@ -22,9 +22,9 @@ def check_leakage():
     df_qual = df[df['qualifying_position'].notna()].copy()
     
     print(f"\n✅ Loaded {len(df_qual)} qualifying sessions")
-    print(f"   Years: {sorted(df_qual['year'].unique())}")
-    print(f"   Train years (2022-2023): {len(df_qual[df_qual['year'] < 2024])} sessions")
-    print(f"   Test year (2024): {len(df_qual[df_qual['year'] == 2024])} sessions")
+    print(f"Years: {sorted(df_qual['year'].unique())}")
+    print(f"Train years (2022-2023): {len(df_qual[df_qual['year'] < 2024])} sessions")
+    print(f"Test year (2024): {len(df_qual[df_qual['year'] == 2024])} sessions")
     
     # Check 1: Circuit history for 2024 races
     print("\n" + "=" * 70)
@@ -42,13 +42,13 @@ def check_leakage():
         if len(circuit_2024) > 0:
             sample = circuit_2024.iloc[0]
             print(f"\n📍 {circuit}:")
-            print(f"   2024 circuit_avg_position: {sample.get('circuit_avg_position', 'N/A'):.2f}")
-            print(f"   Historical races available: {len(circuit_history)} (years: {sorted(circuit_history['year'].unique())})")
+            print(f"2024 circuit_avg_position: {sample.get('circuit_avg_position', 'N/A'):.2f}")
+            print(f"Historical races available: {len(circuit_history)} (years: {sorted(circuit_history['year'].unique())})")
             
             # Calculate what the average SHOULD be (using only 2022-2023)
             if len(circuit_history) > 0 and 'qualifying_position' in circuit_history.columns:
                 expected_avg = circuit_history.groupby('driver')['qualifying_position'].mean().mean()
-                print(f"   Expected avg from 2022-2023 data: {expected_avg:.2f}")
+                print(f"Expected avg from 2022-2023 data: {expected_avg:.2f}")
     
     # Check 2: Recent form for early 2024 races
     print("\n" + "=" * 70)
@@ -74,20 +74,20 @@ def check_leakage():
             has_recent = round_data['recent_avg_position'].notna().sum()
             total = len(round_data)
             
-            print(f"\n🏁 Round {round_num} - {event_name}:")
-            print(f"   Drivers with recent_avg_position: {has_recent}/{total}")
+            print(f"\n Round {round_num} - {event_name}:")
+            print(f"Drivers with recent_avg_position: {has_recent}/{total}")
             
             if round_num == 1:
                 if has_recent > 0:
-                    print(f"   ✅ GOOD: Uses 2023 data for recent form")
+                    print(f"✅ GOOD: Uses 2023 data for recent form")
                 else:
-                    print(f"   ⚠️  WARNING: No recent form data (might be expected)")
+                    print(f"⚠️  WARNING: No recent form data (might be expected)")
             else:
                 if has_recent > 0:
                     sample = round_data[round_data['recent_avg_position'].notna()].iloc[0]
-                    print(f"   Sample recent_avg_position: {sample['recent_avg_position']:.2f}")
-                    print(f"   ⚠️  QUESTION: Does this use 2024 Rounds 1-{round_num-1}?")
-                    print(f"   If YES → LEAKAGE (using test set to predict test set)")
+                    print(f"Sample recent_avg_position: {sample['recent_avg_position']:.2f}")
+                    print(f"⚠️  QUESTION: Does this use 2024 Rounds 1-{round_num-1}?")
+                    print(f"If YES  LEAKAGE (using test set to predict test set)")
     
     # Check 3: Within-year dependencies
     print("\n" + "=" * 70)
@@ -101,18 +101,18 @@ def check_leakage():
     print(f"\n2024 races with recent_avg_position: {has_recent_2024}/{total_2024} ({100*has_recent_2024/total_2024:.1f}%)")
     
     if has_recent_2024 > 0:
-        print("\n🚨 POTENTIAL ISSUE:")
-        print("   If recent_avg_position for 2024 races uses earlier 2024 races,")
-        print("   this creates a dependency chain in the test set.")
-        print("   ")
-        print("   Example: Predicting Monaco 2024 (Round 8)")
-        print("   - Uses Rounds 3-7 of 2024 for recent_avg_position")
-        print("   - But Rounds 3-7 are ALSO in the test set")
-        print("   - This means we need to predict Rounds 3-7 FIRST")
-        print("   - Error compounds: bad prediction → affects next prediction")
+        print("\n POTENTIAL ISSUE:")
+        print("If recent_avg_position for 2024 races uses earlier 2024 races,")
+        print("this creates a dependency chain in the test set.")
+        print("")
+        print("Example: Predicting Monaco 2024 (Round 8)")
+        print("- Uses Rounds 3-7 of 2024 for recent_avg_position")
+        print("- But Rounds 3-7 are ALSO in the test set")
+        print("- This means we need to predict Rounds 3-7 FIRST")
+        print("- Error compounds: bad prediction  affects next prediction")
         print("\n   ✅ SOLUTION:")
-        print("   For test set evaluation, compute recent_avg_position using")
-        print("   ONLY training data (2022-2023), NOT other 2024 races.")
+        print("For test set evaluation, compute recent_avg_position using")
+        print("ONLY training data (2022-2023), NOT other 2024 races.")
     
     # Check 4: Feature distributions
     print("\n" + "=" * 70)
@@ -132,23 +132,23 @@ def check_leakage():
             test_std = test[feature].std()
             
             print(f"\n{feature}:")
-            print(f"   Train: μ={train_mean:.2f}, σ={train_std:.2f}")
-            print(f"   Test:  μ={test_mean:.2f}, σ={test_std:.2f}")
+            print(f"Train: μ={train_mean:.2f}, σ={train_std:.2f}")
+            print(f"Test:  μ={test_mean:.2f}, σ={test_std:.2f}")
             
             # If means are very similar, might indicate leakage
             if abs(train_mean - test_mean) < 0.5:
-                print(f"   ⚠️  Very similar means - check if this is expected")
+                print(f"⚠️  Very similar means - check if this is expected")
     
     # Final verdict
     print("\n" + "=" * 70)
-    print("📋 SUMMARY")
+    print("SUMMARY")
     print("=" * 70)
     print("\n✅ Train/Test split is time-based (2022-2023 vs 2024)")
     print("\n⚠️  POTENTIAL ISSUES TO INVESTIGATE:")
     print("1. Does circuit_avg_position for 2024 include any 2024 data?")
     print("2. Does recent_avg_position for 2024 use other 2024 races?")
     print("3. If #2 is YES, do we need to recompute for fair evaluation?")
-    print("\n🔧 NEXT STEP:")
+    print("\n NEXT STEP:")
     print("Review helpers/historical_features.py to see how these features")
     print("are computed and verify they use only past data.")
 

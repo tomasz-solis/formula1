@@ -31,10 +31,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 from tqdm import tqdm
 
-
-# =============================================================================
 # DATA STRUCTURES
-# =============================================================================
 
 @dataclass
 class ExportResult:
@@ -50,10 +47,7 @@ class ExportResult:
     written_path: Optional[str] = None
     reason: Optional[str] = None
 
-
-# =============================================================================
 # MULTI-SEASON EXPORT
-# =============================================================================
 
 def export_completed_classifications_csv_range(
     start_year: int,
@@ -89,7 +83,7 @@ def export_completed_classifications_csv_range(
     # Iterate through years
     for year in tqdm(
         range(start_year, end_year + 1),
-        desc="📦 Exporting seasons",
+        desc="Exporting seasons",
         colour="blue",
         leave=True
     ):
@@ -125,10 +119,7 @@ def export_completed_classifications_csv_range(
     
     return results_by_season
 
-
-# =============================================================================
 # SINGLE-SESSION EXPORT
-# =============================================================================
 
 def export_session_classification(
     year: int,

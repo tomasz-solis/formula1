@@ -19,9 +19,7 @@ import numpy as np
 pdir = Path("predictions")
 pdir.mkdir(exist_ok=True, parents=True)
 
-# ============================================================================
-# 🏁 RACE CONFIGURATION - CHANGE THIS FOR EACH RACE
-# ============================================================================
+#  RACE CONFIGURATION - CHANGE THIS FOR EACH RACE
 
 # Current race details
 RACE_CONFIG = {
@@ -43,9 +41,7 @@ SESSION_CONFIG = {
     "normal": ['FP1', 'FP2', 'FP3']
 }
 
-# ============================================================================
 # DRIVER AND TEAM CONFIGURATION
-# ============================================================================
 
 # 2025 Grid
 DRIVERS_2025 = [
@@ -103,9 +99,7 @@ TEAM_CHANGES = {
 # API endpoint
 API_BASE = "http://127.0.0.1:8000"
 
-# ============================================================================
 # HELPER FUNCTIONS
-# ============================================================================
 
 def load_recent_form(year: int = 2025, lookback_races: int = 5) -> Optional[pd.DataFrame]:
     """
@@ -177,7 +171,6 @@ def load_recent_form(year: int = 2025, lookback_races: int = 5) -> Optional[pd.D
         print(f"⚠️  Could not load recent form: {e}")
         return None
 
-
 def load_practice_data(circuit: str, is_sprint: bool) -> Optional[pd.DataFrame]:
     """
     Load practice session data for current race.
@@ -218,7 +211,6 @@ def load_practice_data(circuit: str, is_sprint: bool) -> Optional[pd.DataFrame]:
     except Exception as e:
         print(f"⚠️  Could not load practice data: {e}")
         return None
-
 
 def get_practice_baseline(
     driver: str, 
@@ -291,7 +283,6 @@ def get_practice_baseline(
     
     return weighted_pos / total_weight
 
-
 def get_team_adjustment(driver: str) -> Dict[str, float]:
     """
     Get feature adjustments based on team context.
@@ -314,7 +305,7 @@ def get_team_adjustment(driver: str) -> Dict[str, float]:
             '_team_expected': expected_pos,
             '_note': f'Rookie on {team}'
         }
-        print(f"   🆕 {driver} (Rookie): Using {team} baseline (P{expected_pos:.1f})")
+        print(f"🆕 {driver} (Rookie): Using {team} baseline (P{expected_pos:.1f})")
     
     # Team changes: Blend old history with new team
     elif driver in TEAM_CHANGES:
@@ -327,10 +318,9 @@ def get_team_adjustment(driver: str) -> Dict[str, float]:
             '_new_team_position': new_expected,
             '_note': f'Team change: {old_team} → {new_team}'
         }
-        print(f"   🔄 {driver} (Team change): {old_team} → {new_team} (P{new_expected:.1f})")
+        print(f"{driver} (Team change): {old_team}  {new_team} (P{new_expected:.1f})")
     
     return adjustments
-
 
 def enhance_prediction_with_context(
     base_prediction: Dict,
@@ -356,21 +346,21 @@ def enhance_prediction_with_context(
     
     # PRACTICE DATA ADJUSTMENT
     if practice_position is not None:
-        print(f"   📊 Practice: P{practice_position:.1f}", end=" ")
+        print(f"Practice: P{practice_position:.1f}", end=" ")
         
         # Adjust Q3 probability based on practice performance
         if practice_position <= 5:
-            # Strong practice → boost Q3 probability
+            # Strong practice  boost Q3 probability
             boost = min(0.15, (6 - practice_position) * 0.03)
             enhanced['q3']['probability'] = min(0.95, enhanced['q3']['probability'] + boost)
             
         elif practice_position >= 16:
-            # Weak practice → reduce Q3 probability
+            # Weak practice  reduce Q3 probability
             penalty = min(0.15, (practice_position - 15) * 0.03)
             enhanced['q3']['probability'] = max(0.05, enhanced['q3']['probability'] - penalty)
         
         enhanced['q3']['will_make_q3'] = enhanced['q3']['probability'] >= 0.5
-        print(f"→ Q3: {enhanced['q3']['probability']:.1%}")
+        print(f"Q3: {enhanced['q3']['probability']:.1%}")
     
     # TEAM CHANGE ADJUSTMENT
     elif '_team_change' in team_adjustment:
@@ -401,7 +391,7 @@ def enhance_prediction_with_context(
             enhanced['q3']['probability'] = blended_prob
         
         enhanced['q3']['will_make_q3'] = enhanced['q3']['probability'] >= 0.5
-        print(f"→ Team-adjusted Q3: {enhanced['q3']['probability']:.1%}")
+        print(f"Team-adjusted Q3: {enhanced['q3']['probability']:.1%}")
     
     # ROOKIE ADJUSTMENT
     elif '_is_rookie' in team_adjustment:
@@ -415,7 +405,7 @@ def enhance_prediction_with_context(
             enhanced['q3']['probability'] = min(enhanced['q3']['probability'], 0.35)
             enhanced['q3']['will_make_q3'] = False
         
-        print(f"→ Rookie-adjusted Q3: {enhanced['q3']['probability']:.1%}")
+        print(f"Rookie-adjusted Q3: {enhanced['q3']['probability']:.1%}")
     
     # RECENT FORM ADJUSTMENT (applied after all base adjustments)
     if recent_form is not None and driver in recent_form['driver'].values:
@@ -433,15 +423,12 @@ def enhance_prediction_with_context(
         enhanced['q3']['will_make_q3'] = enhanced['q3']['probability'] >= 0.5
         
         if abs(form_adjustment) >= 0.03:
-            trend = "📈" if form_delta < 0 else "📉"
-            print(f"   {trend} Form: P{recent_avg:.1f} (Δ{form_delta:+.1f}) → {old_prob:.1%} → {enhanced['q3']['probability']:.1%}")
+            trend = "" if form_delta < 0 else ""
+            print(f"{trend} Form: P{recent_avg:.1f} (Δ{form_delta:+.1f})  {old_prob:.1%}  {enhanced['q3']['probability']:.1%}")
     
     return enhanced
 
-
-# ============================================================================
 # API INTERACTION
-# ============================================================================
 
 def predict_driver(driver: str, config: Dict) -> Dict:
     """
@@ -469,17 +456,16 @@ def predict_driver(driver: str, config: Dict) -> Dict:
         return response.json()
     except requests.exceptions.HTTPError as e:
         print(f"❌ HTTP {response.status_code} for {driver}")
-        print(f"   Payload sent: {payload}")
+        print(f"Payload sent: {payload}")
         try:
             error_detail = response.json()
-            print(f"   API says: {error_detail}")
+            print(f"API says: {error_detail}")
         except:
-            print(f"   Raw response: {response.text[:500]}")
+            print(f"Raw response: {response.text[:500]}")
         return None
     except requests.exceptions.RequestException as e:
         print(f"❌ Request failed for {driver}: {e}")
         return None
-
 
 def predict_full_grid(drivers: List[str], config: Dict) -> pd.DataFrame:
     """
@@ -504,12 +490,12 @@ def predict_full_grid(drivers: List[str], config: Dict) -> pd.DataFrame:
     recent_form = load_recent_form(year=config["year"], lookback_races=5)
     
     weekend_type = "SPRINT" if config["is_sprint_weekend"] else "NORMAL"
-    print(f"\n🏁 Predicting {config['circuit']} {config['year']} ({weekend_type} WEEKEND)")
-    print(f"   Weather: {config['weather']['avg_air_temp']:.0f}°C air, {config['weather']['avg_track_temp']:.0f}°C track")
-    print(f"   Grid: {len(drivers)} drivers\n")
+    print(f"\n Predicting {config['circuit']} {config['year']} ({weekend_type} WEEKEND)")
+    print(f"Weather: {config['weather']['avg_air_temp']:.0f}°C air, {config['weather']['avg_track_temp']:.0f}°C track")
+    print(f"Grid: {len(drivers)} drivers\n")
     
     for driver in drivers:
-        print(f"   {driver:3s} ({TEAM_MAPPING.get(driver, 'Unknown'):12s}): ", end="")
+        print(f"{driver:3s} ({TEAM_MAPPING.get(driver, 'Unknown'):12s}): ", end="")
         
         # Get base prediction from API
         base_pred = predict_driver(driver, config)
@@ -566,10 +552,7 @@ def predict_full_grid(drivers: List[str], config: Dict) -> pd.DataFrame:
     
     return pd.DataFrame(results)
 
-
-# ============================================================================
 # OUTPUT FORMATTING
-# ============================================================================
 
 def format_predictions(df: pd.DataFrame, config: Dict) -> None:
     """
@@ -581,14 +564,12 @@ def format_predictions(df: pd.DataFrame, config: Dict) -> None:
     """
     weekend_type = "SPRINT WEEKEND" if config["is_sprint_weekend"] else "NORMAL WEEKEND"
     
-    print("\n" + "="*90)
-    print(f"🏁 {config['circuit'].upper()} {config['year']} - QUALIFYING PREDICTIONS ({weekend_type})")
-    print("="*90)
+    print(f"{config['circuit'].upper()} {config['year']} - QUALIFYING PREDICTIONS ({weekend_type})")
     
     # Sort by Q3 probability
     df_sorted = df.sort_values('q3_probability', ascending=False).reset_index(drop=True)
     
-    print("\n🏆 TOP 10 PREDICTION (Q3)")
+    print("\n TOP 10 PREDICTION (Q3)")
     print("-" * 90)
     print(f"{'Pos':<5} {'Driver':<8} {'Team':<15} {'Practice':<10} {'Q3 Prob':<12} {'Confidence':<12}")
     print("-" * 90)
@@ -606,7 +587,7 @@ def format_predictions(df: pd.DataFrame, config: Dict) -> None:
         practice_str = f"P{row['practice_avg_position']:.1f}" if pd.notna(row['practice_avg_position']) else "-"
         print(f"{idx+1:<5} {row['driver']:<8} {row['team']:<15} {practice_str:<10} {row['predicted_round']:<10} {row['q3_probability']:>6.1%}")
     
-    print("\n🏁 TOP 3 PREDICTION (PODIUM)")
+    print("\n TOP 3 PREDICTION (PODIUM)")
     print("-" * 90)
     print(f"{'Pos':<5} {'Driver':<8} {'Team':<15} {'Top 3?':<10} {'Probability':<12}")
     print("-" * 90)
@@ -616,20 +597,18 @@ def format_predictions(df: pd.DataFrame, config: Dict) -> None:
         top3_status = "🥇 YES" if idx < 3 else "❌ NO"
         print(f"{idx+1:<5} {row['driver']:<8} {row['team']:<15} {top3_status:<10} {row['top3_probability']:>6.1%}")
     
-    print("\n📊 ENHANCEMENTS APPLIED")
+    print("\n ENHANCEMENTS APPLIED")
     print("-" * 90)
     rookies_count = len([d for d in df['driver'] if d in ROOKIES])
     team_changes_count = len([d for d in df['driver'] if d in TEAM_CHANGES])
     practice_data_count = df['practice_avg_position'].notna().sum()
     form_data_count = df['form_delta'].notna().sum()
     
-    print(f"   Rookies with team baseline: {rookies_count}")
-    print(f"   Team changes adjusted: {team_changes_count}")
-    print(f"   Drivers with practice data: {practice_data_count}/{len(df)}")
-    print(f"   Drivers with recent form: {form_data_count}/{len(df)}")
+    print(f"Rookies with team baseline: {rookies_count}")
+    print(f"Team changes adjusted: {team_changes_count}")
+    print(f"Drivers with practice data: {practice_data_count}/{len(df)}")
+    print(f"Drivers with recent form: {form_data_count}/{len(df)}")
     
-    print("\n" + "="*90)
-
 
 def save_predictions(df: pd.DataFrame, config: Dict):
     """
@@ -644,12 +623,9 @@ def save_predictions(df: pd.DataFrame, config: Dict):
     filename = f"{circuit_name}_{config['year']}_predictions.csv"
     
     df.to_csv(f'{pdir}/{filename}', index=False)
-    print(f"\n💾 Predictions saved to: {pdir}/{filename}")
+    print(f"\n Predictions saved to: {pdir}/{filename}")
 
-
-# ============================================================================
 # MAIN EXECUTION
-# ============================================================================
 
 def main():
     """Main execution."""
@@ -659,11 +635,11 @@ def main():
         response = requests.get(f"{API_BASE}/health", timeout=2)
         if response.status_code != 200:
             print("❌ API is not healthy. Start it with:")
-            print("   cd api && uvicorn main:app --reload")
+            print("cd api && uvicorn main:app --reload")
             return
     except requests.exceptions.RequestException:
         print("❌ API is not running. Start it with:")
-        print("   cd api && uvicorn main:app --reload")
+        print("cd api && uvicorn main:app --reload")
         return
     
     print("✅ API is running")
@@ -682,11 +658,10 @@ def main():
     save_predictions(predictions_df, RACE_CONFIG)
     
     print("\n✅ Predictions complete!")
-    print("\n💡 To predict for next race:")
-    print("   1. Update RACE_CONFIG at the top of this file")
-    print("   2. Set circuit name, year, sprint status, and weather")
-    print("   3. Run: python race_prediction_v2.py")
-
+    print("\n To predict for next race:")
+    print("1. Update RACE_CONFIG at the top of this file")
+    print("2. Set circuit name, year, sprint status, and weather")
+    print("3. Run: python race_prediction_v2.py")
 
 if __name__ == "__main__":
     main()

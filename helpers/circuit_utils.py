@@ -42,10 +42,7 @@ from scipy.spatial import cKDTree
 
 log = logging.getLogger(__name__)
 
-
-# =============================================================================
 # CIRCUIT LOOKUP HELPERS
-# =============================================================================
 
 def get_elevation(latitude: float,
                   longitude: float,
@@ -76,7 +73,6 @@ def get_elevation(latitude: float,
     """
     from .general_utils import get_elevation as _get_elev
     return _get_elev(latitude, longitude, timeout)
-
 
 def get_circuits(season: int) -> pd.DataFrame:
     """
@@ -127,7 +123,6 @@ def get_circuits(season: int) -> pd.DataFrame:
 
     return pd.DataFrame(results)
 
-
 def get_all_circuits(start_year: int = 2020,
                      end_year: int = 2025) -> pd.DataFrame:
     """
@@ -156,10 +151,7 @@ def get_all_circuits(start_year: int = 2020,
     # Deduplicate by circuitName, keep first occurrence
     return full.drop_duplicates(subset=['circuitName'], keep='first').reset_index(drop=True)
 
-
-# =============================================================================
 # TRACK FEATURE EXTRACTION
-# =============================================================================
 
 def extract_track_metrics(session) -> Optional[Dict[str, float]]:
     """
@@ -209,7 +201,6 @@ def extract_track_metrics(session) -> Optional[Dict[str, float]]:
         log.warning(f"⚠️ Failed to extract track metrics: {e}")
         return None
 
-
 def get_valid_lap_with_pos(session, max_attempts: int = 5):
     """
     Find a quick lap with valid positional data (X/Y coordinates).
@@ -244,7 +235,6 @@ def get_valid_lap_with_pos(session, max_attempts: int = 5):
             log.warning(f"Skipping lap for driver {drv_num}: {e}")
     log.warning("⚠️ No valid lap with position data found.")
     return None
-
 
 def get_circuit_corner_profile(
     session,
@@ -353,10 +343,7 @@ def get_circuit_corner_profile(
         name = getattr(session, "name", "Unknown")
         raise ValueError(f"⚠️ Failed to compute corner profile: {event} {name} – {e}")
 
-
-# =============================================================================
 # HIGHER-LEVEL PROFILING PIPELINES
-# =============================================================================
 
 def build_profiles_for_season(
     year: int,
@@ -531,7 +518,7 @@ def _build_circuit_profile_df(
     all_profiles, all_skipped = [], []
 
     for year in range(start_year, end_year + 1):
-        tqdm.write(f"\n📅 Building profiles for season {year}...")
+        tqdm.write(f"\n Building profiles for season {year}...")
         circuit_metadata = get_all_circuits(year)
 
         if only_specific and year in only_specific:
@@ -670,7 +657,6 @@ def plot_cluster_radar(
         title="Driving Style Radar per Cluster"
     )
     return fig
-
 
 def create_pca_for_n_clusters(
     circuits: pd.DataFrame,

@@ -28,10 +28,7 @@ from typing import List, Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
 # CORE VALIDATION FUNCTIONS
-# =============================================================================
 
 def validate_feature_dataframe(
     df: pd.DataFrame,
@@ -149,7 +146,6 @@ def validate_feature_dataframe(
         len(df), len(required_columns), total_missing
     )
 
-
 def validate_merge_keys(
     df1: pd.DataFrame,
     df2: pd.DataFrame,
@@ -203,7 +199,6 @@ def validate_merge_keys(
     
     logger.info("✅ Merge keys validated for %s", context)
 
-
 def validate_session_data(
     df: pd.DataFrame,
     expected_sessions: List[str]
@@ -239,10 +234,7 @@ def validate_session_data(
     
     logger.info("✅ All sessions valid: %s", actual_sessions)
 
-
-# =============================================================================
 # SUMMARY STATISTICS
-# =============================================================================
 
 def summarize_dataset(df: pd.DataFrame) -> Dict[str, Any]:
     """
@@ -293,7 +285,6 @@ def summarize_dataset(df: pd.DataFrame) -> Dict[str, Any]:
     
     return summary
 
-
 def generate_validation_report(df: pd.DataFrame) -> str:
     """
     Generate formatted validation report for dataset.
@@ -313,7 +304,7 @@ def generate_validation_report(df: pd.DataFrame) -> str:
         ============================================================
         DATA VALIDATION REPORT
         ============================================================
-        📊 Dataset Overview:
+         Dataset Overview:
            Rows: 1,353
            ...
     """
@@ -326,7 +317,7 @@ def generate_validation_report(df: pd.DataFrame) -> str:
     report.append("")
     
     # Dataset overview
-    report.append("📊 Dataset Overview:")
+    report.append(" Dataset Overview:")
     report.append(f"   Rows: {summary['total_rows']:,}")
     report.append(f"   Columns: {summary['total_columns']}")
     report.append(f"   Missing values: {summary['missing_values']} ({summary['missing_pct']:.2f}%)")
@@ -335,21 +326,21 @@ def generate_validation_report(df: pd.DataFrame) -> str:
     
     # Year breakdown
     if 'rows_per_year' in summary:
-        report.append("📅 Rows per year:")
+        report.append(" Rows per year:")
         for year, count in sorted(summary['rows_per_year'].items()):
             report.append(f"   {year}: {count:,}")
         report.append("")
     
     # Weekend types
     if 'sprint_weekends' in summary:
-        report.append("🏁 Weekend types:")
+        report.append(" Weekend types:")
         report.append(f"   Sprint: {summary['sprint_weekends']}")
         report.append(f"   Normal: {summary['normal_weekends']}")
         report.append("")
     
     # Target variable
     if 'target_min' in summary:
-        report.append("🎯 Target variable (qualifying_position):")
+        report.append(" Target variable (qualifying_position):")
         report.append(f"   Range: {summary['target_min']:.0f} - {summary['target_max']:.0f}")
         report.append(f"   Mean: {summary['target_mean']:.2f}")
         report.append(f"   Std Dev: {summary['target_std']:.2f}")

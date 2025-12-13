@@ -23,7 +23,6 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
 class AutoRetrainer:
     """
     Handles automatic model retraining when new data arrives.
@@ -100,8 +99,8 @@ class AutoRetrainer:
         }
         
         if result['new_data']:
-            logger.info(f"✨ New data detected: {new_races} new race(s)")
-            logger.info(f"   Total races: {last_race_count} → {current_race_count}")
+            logger.info(f" New data detected: {new_races} new race(s)")
+            logger.info(f"  Total races: {last_race_count}  {current_race_count}")
         
         return result
     
@@ -136,13 +135,13 @@ class AutoRetrainer:
         Returns:
             dict with new models and metrics
         """
-        logger.info("🔄 Starting automatic retraining...")
+        logger.info(" Starting automatic retraining...")
         
         # Prepare data - FILTER OUT NaN positions first
         valid_positions = features_df['qualifying_position'].notna()
         features_df = features_df[valid_positions].copy()
         
-        logger.info(f"   Filtered to {len(features_df)} records with valid qualifying positions")
+        logger.info(f"  Filtered to {len(features_df)} records with valid qualifying positions")
         
         X = features_df[features_list]
         y_q3 = (features_df['qualifying_position'] <= 10).astype(int)
@@ -201,9 +200,9 @@ class AutoRetrainer:
         model_round.fit(X_train, y_round_train)
         round_acc = accuracy_score(y_round_val, model_round.predict(X_val))
         
-        logger.info(f"   ✅ Q3: {q3_acc:.1%} accuracy")
-        logger.info(f"   ✅ Top3: {top3_acc:.1%} accuracy")
-        logger.info(f"   ✅ Round: {round_acc:.1%} accuracy")
+        logger.info(f"  ✅ Q3: {q3_acc:.1%} accuracy")
+        logger.info(f"  ✅ Top3: {top3_acc:.1%} accuracy")
+        logger.info(f"  ✅ Round: {round_acc:.1%} accuracy")
         
         return {
             'q3': {'model': model_q3, 'accuracy': q3_acc},
@@ -284,7 +283,7 @@ class AutoRetrainer:
             logger.info(f"✅ New models better: avg improvement {avg_improvement:+.1%}")
         else:
             logger.info(f"⏭️  New models worse: avg improvement {avg_improvement:+.1%}")
-            logger.info(f"   Keeping current models")
+            logger.info(f"  Keeping current models")
         
         return result
     
@@ -353,7 +352,7 @@ class AutoRetrainer:
         # Update training history
         self._update_history(version, models, metadata)
         
-        logger.info(f"🚀 Deployed new model version: v{version}")
+        logger.info(f" Deployed new model version: v{version}")
     
     def _update_history(self, version: str, models: dict, metadata: dict):
         """Update training history file."""
@@ -418,7 +417,7 @@ class AutoRetrainer:
             }
         
         # Step 3: Load data
-        logger.info("📂 Loading features for retraining...")
+        logger.info(" Loading features for retraining...")
         features_df = pd.read_parquet(features_path)
         
         # Step 3.5: Determine feature list
@@ -429,7 +428,7 @@ class AutoRetrainer:
             with open(metadata_file, 'r') as f:
                 metadata = json.load(f)
             features_list = metadata['features']
-            logger.info(f"   Using {len(features_list)} features from existing metadata")
+            logger.info(f"  Using {len(features_list)} features from existing metadata")
         else:
             # First time training - infer features from dataframe
             logger.info("🆕 First time training - inferring features from data")
@@ -446,8 +445,8 @@ class AutoRetrainer:
                 if col not in exclude_cols and features_df[col].dtype in ['int64', 'float64']
             ]
             
-            logger.info(f"   Inferred {len(features_list)} features from data")
-            logger.info(f"   Features: {features_list[:10]}..." if len(features_list) > 10 else f"   Features: {features_list}")
+            logger.info(f"  Inferred {len(features_list)} features from data")
+            logger.info(f"  Features: {features_list[:10]}..." if len(features_list) > 10 else f"   Features: {features_list}")
         
         # Validate features exist in dataframe
         missing_features = [f for f in features_list if f not in features_df.columns]
@@ -486,7 +485,6 @@ class AutoRetrainer:
                 'comparison': comparison
             }
 
-
 # Integration point for main.py
 def auto_retrain_if_needed(features_file: str = "data/features/ml_features.parquet"):
     """
@@ -499,14 +497,13 @@ def auto_retrain_if_needed(features_file: str = "data/features/ml_features.parqu
     result = retrainer.run_auto_retrain(features_file)
     
     if result['status'] == 'deployed':
-        logger.info("🎉 Auto-retraining complete! New models deployed.")
+        logger.info(" Auto-retraining complete! New models deployed.")
     elif result['status'] == 'skipped':
         logger.info("⏭️  Auto-retraining skipped: " + result['reason'])
     elif result['status'] == 'not_deployed':
         logger.info("⏭️  Models trained but not deployed: " + result['reason'])
     
     return result
-
 
 if __name__ == "__main__":
     # Test run

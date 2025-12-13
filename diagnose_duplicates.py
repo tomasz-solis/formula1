@@ -7,7 +7,7 @@ This will test each feature dataframe for duplicates on their merge keys.
 import pandas as pd
 import sys
 
-print("🔍 DUPLICATE DIAGNOSIS")
+print("DUPLICATE DIAGNOSIS")
 print("=" * 80)
 
 # Load the problematic data
@@ -19,7 +19,7 @@ except Exception as e:
     sys.exit(1)
 
 # Test 1: Check for duplicates in base data
-print("\n📊 TEST 1: Base data duplicates")
+print("\n TEST 1: Base data duplicates")
 print("-" * 80)
 base_dups = df.duplicated(subset=['year', 'event', 'driver'], keep=False)
 dup_count = base_dups.sum()
@@ -32,7 +32,7 @@ if dup_count > 0:
     print(dup_examples[['driver', 'event', 'year', 'qualifying_position']])
     
     # Show which columns differ
-    print("\n🔍 Which columns have different values in duplicates?")
+    print("\n Which columns have different values in duplicates?")
     test_driver = dup_examples.iloc[0]['driver']
     test_event = dup_examples.iloc[0]['event']
     test_year = dup_examples.iloc[0]['year']
@@ -60,7 +60,7 @@ if dup_count > 0:
         print(test_rows[['driver', 'event', 'year'] + varying_cols[:5]])
 
 # Test 2: Check feature dataframes for duplicates on their merge keys
-print("\n\n📊 TEST 2: Feature-level duplicate check")
+print("\n\n TEST 2: Feature-level duplicate check")
 print("-" * 80)
 print("Re-computing features to check merge key uniqueness...\n")
 
@@ -118,35 +118,35 @@ except Exception as e:
     print(f"❌ Failed to test feature computation: {e}")
 
 # Test 3: Specific merge key tests
-print("\n\n📊 TEST 3: Merge key cardinality")
+print("\n\n TEST 3: Merge key cardinality")
 print("-" * 80)
 
 # Test circuit features (should be 1 per event-year)
 circuit_cols = [c for c in df.columns if 'circuit' in c.lower() and 'avg' not in c]
 if circuit_cols:
-    print("\n🏁 Circuit features:")
+    print("\n Circuit features:")
     circuit_dups = df.duplicated(subset=['event', 'year'] + circuit_cols[:1], keep=False)
     unique_circuits = df[['event', 'year']].drop_duplicates().shape[0]
-    print(f"   Unique (event, year): {unique_circuits}")
-    print(f"   Total rows: {len(df)}")
-    print(f"   Ratio: {len(df) / unique_circuits:.1f}x")
+    print(f"Unique (event, year): {unique_circuits}")
+    print(f"Total rows: {len(df)}")
+    print(f"Ratio: {len(df) / unique_circuits:.1f}x")
     if len(df) / unique_circuits > 20:
-        print("   ⚠️ This looks suspicious - should be ~20 drivers per event")
+        print("⚠️ This looks suspicious - should be ~20 drivers per event")
 
 # Test weather features (should be 1 per driver-year)
 weather_cols = [c for c in df.columns if 'wet' in c or 'dry' in c]
 if weather_cols:
-    print("\n🌧️ Weather features:")
+    print("\n Weather features:")
     unique_driver_years = df[['driver', 'year']].drop_duplicates().shape[0]
-    print(f"   Unique (driver, year): {unique_driver_years}")
-    print(f"   Total rows: {len(df)}")
-    print(f"   Ratio: {len(df) / unique_driver_years:.1f}x")
+    print(f"Unique (driver, year): {unique_driver_years}")
+    print(f"Total rows: {len(df)}")
+    print(f"Ratio: {len(df) / unique_driver_years:.1f}x")
     if len(df) / unique_driver_years > 25:
-        print("   ⚠️ This looks suspicious - should be ~20-24 events per year")
+        print("⚠️ This looks suspicious - should be ~20-24 events per year")
 
 print("\n" + "=" * 80)
 print("✅ DIAGNOSIS COMPLETE")
 print("\nNEXT STEPS:")
-print("1. If duplicates found in base data → problem is in the merge operations")
-print("2. If duplicates in session-level data → problem is in data collection")
-print("3. If cardinality ratios are wrong → identify which feature is multiplying rows")
+print("1. If duplicates found in base data  problem is in the merge operations")
+print("2. If duplicates in session-level data  problem is in data collection")
+print("3. If cardinality ratios are wrong  identify which feature is multiplying rows")

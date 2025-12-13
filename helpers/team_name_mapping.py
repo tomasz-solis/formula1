@@ -5,7 +5,7 @@ Handles F1 team name variations across different data sources and years.
 Maps all variations to canonical team identifiers for consistent analysis.
 
 Key Features:
-- Handles team rebranding (AlphaTauri → RB, Alfa Romeo → Sauber)
+- Handles team rebranding (AlphaTauri  RB, Alfa Romeo  Sauber)
 - Maps sponsor name changes to core team identity
 - Provides safe fallback for unknown teams
 - Logs unknown team names for manual review
@@ -26,20 +26,17 @@ from typing import Union
 
 logger = logging.getLogger(__name__)
 
-
-# =============================================================================
 # TEAM NAME MAPPING
-# =============================================================================
 
 TEAM_NAME_MAP = {
-    # Sauber lineage (Sauber → Alfa Romeo → Kick Sauber → Audi)
+    # Sauber lineage (Sauber  Alfa Romeo  Kick Sauber  Audi)
     'Sauber': 'SAUBER',
     'Alfa Romeo': 'SAUBER',
     'Kick Sauber': 'SAUBER',
     'Stake F1 Team Kick Sauber': 'SAUBER',
     'Kick Sauber F1 Team': 'SAUBER',
     
-    # AlphaTauri lineage (Toro Rosso → AlphaTauri → RB)
+    # AlphaTauri lineage (Toro Rosso  AlphaTauri  RB)
     'AlphaTauri': 'RB',
     'Scuderia AlphaTauri': 'RB',
     'Visa Cash App RB': 'RB',
@@ -61,14 +58,14 @@ TEAM_NAME_MAP = {
     'Ferrari': 'FERRARI',
     'Scuderia Ferrari': 'FERRARI',
 
-    # Aston Martin lineage (Racing Point → Aston Martin)
+    # Aston Martin lineage (Racing Point  Aston Martin)
     'Racing Point': 'ASTON MARTIN',
     'SportPesa Racing Point': 'ASTON MARTIN',
     'BWT Racing Point': 'ASTON MARTIN',
     'Aston Martin': 'ASTON MARTIN',
     'Aston Martin Aramco': 'ASTON MARTIN',
 
-    # Alpine lineage (Renault → Alpine)
+    # Alpine lineage (Renault  Alpine)
     'Renault': 'ALPINE',
     'Renault F1 Team': 'ALPINE',
     'Alpine': 'ALPINE',
@@ -88,10 +85,7 @@ TEAM_NAME_MAP = {
     'Williams Racing': 'WILLIAMS',
 }
 
-
-# =============================================================================
 # CANONICALIZATION FUNCTIONS
-# =============================================================================
 
 def canonicalize_team(name: str) -> str:
     """
@@ -116,7 +110,6 @@ def canonicalize_team(name: str) -> str:
         return None
     
     return TEAM_NAME_MAP.get(name, str(name).upper())
-
 
 def normalize_team_column(
     df: Union[pd.DataFrame, pd.Series],

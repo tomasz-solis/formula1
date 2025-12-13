@@ -33,7 +33,6 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from .general_utils import merge_driver_features_with_targets
 
-
 # Configure logger
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -41,10 +40,7 @@ logging.basicConfig(
     format='%(message)s'
 )
 
-
-# =============================================================================
 # DRIVER HISTORICAL PERFORMANCE (LEAKAGE-FREE)
-# =============================================================================
 
 def compute_circuit_history(
     driver_profiles: pd.DataFrame,
@@ -86,9 +82,7 @@ def compute_circuit_history(
     if valid_data.empty:
         return pd.DataFrame()
     
-    # ========================================================================
     # CRITICAL FIX: Compute history per-year, excluding current year
-    # ========================================================================
     
     results = []
     
@@ -131,7 +125,6 @@ def compute_circuit_history(
             results.append(result)
     
     return pd.DataFrame(results)
-
 
 def compute_recent_form(
     driver_profiles: pd.DataFrame,
@@ -249,7 +242,6 @@ def compute_recent_form(
     
     return pd.DataFrame(results)
 
-
 def compute_weather_performance(
     driver_profiles: pd.DataFrame,
     rain_threshold: float = 0.1
@@ -303,7 +295,6 @@ def compute_weather_performance(
             results.append(result)
     
     return pd.DataFrame(results)
-
 
 def compute_team_circuit_performance(
     driver_profiles: pd.DataFrame,
@@ -365,7 +356,6 @@ def compute_team_circuit_performance(
     
     return pd.DataFrame(results)
 
-
 def compute_team_momentum(
     driver_profiles: pd.DataFrame,
     window_size: int = 5
@@ -426,7 +416,6 @@ def compute_team_momentum(
     
     return pd.DataFrame(results)
 
-
 # Placeholder functions for race-specific features
 # (These don't have leakage issues, keeping for compatibility)
 
@@ -446,10 +435,7 @@ def compute_dnf_probability(driver_profiles: pd.DataFrame) -> pd.DataFrame:
     """Placeholder for DNF probability."""
     return pd.DataFrame()
 
-
-# =============================================================================
 # MAIN FEATURE COMPUTATION (LEAKAGE-FREE)
-# =============================================================================
 
 def compute_historical_features(
     driver_profiles: pd.DataFrame,
@@ -484,10 +470,10 @@ def compute_historical_features(
     Returns:
         DataFrame with all features (no leakage)
     """
-    logger.info("🔮 Computing historical features...")
+    logger.info(" Computing historical features...")
     
     # Step 1: Merge with targets
-    logger.info("  🎯 Merging driver profiles with classification targets...")
+    logger.info("   Merging driver profiles with classification targets...")
     
     from .general_utils import merge_driver_features_with_targets
     
@@ -501,7 +487,7 @@ def compute_historical_features(
         logger.error("❌ Failed to merge driver profiles with targets")
         return pd.DataFrame()
     
-    logger.info(f"  ✅ Merged: {driver_with_positions.shape}")
+    logger.info(f" ✅ Merged: {driver_with_positions.shape}")
     
     # Step 2: Aggregate to one row per driver-race
     logger.info("  📍 Aggregating to driver-race level...")
@@ -536,7 +522,7 @@ def compute_historical_features(
     ).agg(agg_dict)
     
     final_rows = len(driver_with_positions)
-    logger.info(f"  ✅ Aggregated to {final_rows:,} driver-races")
+    logger.info(f" ✅ Aggregated to {final_rows:,} driver-races")
     
     # Step 3: Initialize feature DataFrames
     circuit_history = pd.DataFrame()
@@ -558,9 +544,9 @@ def compute_historical_features(
             driver_with_positions,
             lookback_years=lookback_years
         )
-        logger.info(f"       ✅ {len(circuit_history):,} rows")
+        logger.info(f"    ✅ {len(circuit_history):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     try:
         logger.info("     - Recent form (chronological, no within-year leakage)...")
@@ -568,9 +554,9 @@ def compute_historical_features(
             driver_with_positions,
             window_size=form_window
         )
-        logger.info(f"       ✅ {len(recent_form):,} rows")
+        logger.info(f"    ✅ {len(recent_form):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     try:
         logger.info("     - Weather performance...")
@@ -578,9 +564,9 @@ def compute_historical_features(
             driver_with_positions,
             rain_threshold=rain_threshold
         )
-        logger.info(f"       ✅ {len(weather_perf):,} rows")
+        logger.info(f"    ✅ {len(weather_perf):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     try:
         logger.info("     - Team circuit performance (using ONLY past years)...")
@@ -588,9 +574,9 @@ def compute_historical_features(
             driver_with_positions,
             lookback_years=lookback_years
         )
-        logger.info(f"       ✅ {len(team_circuit):,} rows")
+        logger.info(f"    ✅ {len(team_circuit):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     try:
         logger.info("     - Team momentum...")
@@ -598,9 +584,9 @@ def compute_historical_features(
             driver_with_positions,
             window_size=form_window
         )
-        logger.info(f"       ✅ {len(team_momentum):,} rows")
+        logger.info(f"    ✅ {len(team_momentum):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     # Circuit overtaking features
     try:
@@ -610,9 +596,9 @@ def compute_historical_features(
             driver_with_positions,
             lookback_years=lookback_years
         )
-        logger.info(f"       ✅ {len(circuit_overtaking):,} rows")
+        logger.info(f"    ✅ {len(circuit_overtaking):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     # Driver overtaking skill
     try:
@@ -622,9 +608,9 @@ def compute_historical_features(
             driver_with_positions,
             lookback_years=lookback_years
         )
-        logger.info(f"       ✅ {len(driver_overtaking):,} rows")
+        logger.info(f"    ✅ {len(driver_overtaking):,} rows")
     except Exception as e:
-        logger.error(f"       ❌ Failed: {e}")
+        logger.error(f"    ❌ Failed: {e}")
     
     # Step 5: Merge all features
     logger.info("  🔗 Merging all features...")
@@ -638,7 +624,7 @@ def compute_historical_features(
             on=['year', 'event', 'driver'],
             how='left'
         )
-        logger.info(f"     ✅ Circuit history merged: {result.shape}")
+        logger.info(f"   ✅ Circuit history merged: {result.shape}")
     
     # Merge recent form
     if not recent_form.empty:
@@ -647,7 +633,7 @@ def compute_historical_features(
             on=['year', 'event', 'driver'],
             how='left'
         )
-        logger.info(f"     ✅ Recent form merged: {result.shape}")
+        logger.info(f"   ✅ Recent form merged: {result.shape}")
     
     # Merge weather performance
     if not weather_perf.empty:
@@ -656,7 +642,7 @@ def compute_historical_features(
             on=['year', 'driver'],
             how='left'
         )
-        logger.info(f"     ✅ Weather performance merged: {result.shape}")
+        logger.info(f"   ✅ Weather performance merged: {result.shape}")
     
     # Merge team features
     if not team_circuit.empty and 'team' in result.columns:
@@ -665,7 +651,7 @@ def compute_historical_features(
             on=['team', 'year', 'event'],
             how='left'
         )
-        logger.info(f"     ✅ Team circuit merged: {result.shape}")
+        logger.info(f"   ✅ Team circuit merged: {result.shape}")
     
     if not team_momentum.empty and 'team' in result.columns:
         # ✅ FIX: Deduplicate team_momentum (can have multiple rows per team-event if multiple drivers)
@@ -682,7 +668,7 @@ def compute_historical_features(
             on=['team', 'year', 'event'],
             how='left'
         )
-        logger.info(f"     ✅ Team momentum merged (deduplicated): {result.shape}")
+        logger.info(f"   ✅ Team momentum merged (deduplicated): {result.shape}")
     
     # Merge circuit overtaking features
     if not circuit_overtaking.empty:
@@ -691,7 +677,7 @@ def compute_historical_features(
             on=['event', 'year'],
             how='left'
         )
-        logger.info(f"     ✅ Circuit overtaking merged: {result.shape}")
+        logger.info(f"   ✅ Circuit overtaking merged: {result.shape}")
     
     # Merge driver overtaking skill
     if not driver_overtaking.empty:
@@ -700,7 +686,7 @@ def compute_historical_features(
             on=['driver', 'year'],
             how='left'
         )
-        logger.info(f"     ✅ Driver overtaking skill merged: {result.shape}")
+        logger.info(f"   ✅ Driver overtaking skill merged: {result.shape}")
     
     # Merge circuit profiles
     if not circuit_profiles.empty:
@@ -720,7 +706,7 @@ def compute_historical_features(
             agg_dict = {col: 'mean' for col in numeric_cols}
             circuit_data = circuit_data.groupby(['event', 'year'], as_index=False).agg(agg_dict)
             
-            logger.info(f"     🔧 Circuit profiles deduplicated: {circuit_data.shape}")
+            logger.info(f"   Circuit profiles deduplicated: {circuit_data.shape}")
             
             # Rename to standard feature names
             rename_map = {
@@ -741,7 +727,7 @@ def compute_historical_features(
                 on=['event', 'year'],
                 how='left'
             )
-            logger.info(f"     ✅ Circuit profiles merged: {result.shape}")
+            logger.info(f"   ✅ Circuit profiles merged: {result.shape}")
     
     logger.info(f"✅ Final feature dataset: {result.shape}")
     
@@ -771,10 +757,10 @@ def compute_historical_features(
     
     logger.info(f"✅ No duplicates on {base_keys}")
     logger.info(f"🔒 LEAKAGE-FREE guarantee:")
-    logger.info(f"   - Circuit history uses ONLY past years")
-    logger.info(f"   - Recent form chronologically ordered")
-    logger.info(f"   - No test data used in feature computation")
-    logger.info(f"   - Circuit overtaking features added")
-    logger.info(f"   - Driver overtaking skill added")
+    logger.info(f"  - Circuit history uses ONLY past years")
+    logger.info(f"  - Recent form chronologically ordered")
+    logger.info(f"  - No test data used in feature computation")
+    logger.info(f"  - Circuit overtaking features added")
+    logger.info(f"  - Driver overtaking skill added")
     
     return result

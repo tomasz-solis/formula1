@@ -21,7 +21,6 @@ Turns out F1 is perfect for this because:
 3. **Small datasets**: Only ~20 races/year forces you to be smart about features
 4. **Clear evaluation**: Did they make Q3? Yes or no - simple.
 
----
 
 ## The Journey: From Failure to Working Models
 
@@ -51,7 +50,6 @@ Switched to yes/no questions instead:
 - Top 3 prediction: 89% accurate (vs 15% baseline)
 - Stopped trying to predict the unpredictable, started predicting patterns
 
----
 
 ## What Makes It Actually Learn
 
@@ -150,7 +148,6 @@ Because real F1 data is messy:
 
 The system canonicalizes team names, fills missing values intelligently based on context, and tracks data availability per feature. No more "NaN means guess randomly".
 
----
 
 ## The Self-Learning Part (MLOps)
 
@@ -198,7 +195,6 @@ Real production ML:
 
 This project does the real thing. It's not just "I trained a model", it's "I built a self-improving system".
 
----
 
 ## Current Performance
 
@@ -227,7 +223,6 @@ This project does the real thing. It's not just "I trained a model", it's "I bui
 
 Basically, it's deployable to actual users (if anyone wanted F1 predictions from me).
 
----
 
 ## Project Structure
 
@@ -259,7 +254,6 @@ formula1/
     └── dynamic_model_loader.py  # Auto-reload models
 ```
 
----
 
 ## Quick Start
 
@@ -351,7 +345,6 @@ To predict a new race, just update these 5 values. Script handles:
 - Team changes (blended predictions)
 - Missing data (intelligent fallback)
 
----
 
 ## Features That Actually Matter
 
@@ -367,7 +360,6 @@ After trying 50+ features, these are what the models actually use:
 
 **Key insight**: Weather-adjusted features matter. The model learned that some drivers (Sainz, Alonso, Norris) are rain specialists - they punch above their weight when it's wet. Also learned that team context is crucial for drivers with limited history.
 
----
 
 ## Things I Learned Building This
 
@@ -445,7 +437,6 @@ Building a model that works on clean training data is easy. Building one that do
 
 **Lesson**: Production ML is 20% modeling, 80% handling edge cases gracefully.
 
----
 
 ## What's Next
 
@@ -466,7 +457,6 @@ Building a model that works on clean training data is easy. Building one that do
 - Real-time predictions during FP sessions
 - Web UI for non-technical users
 
----
 
 ## Technical Bits
 
@@ -489,7 +479,6 @@ Building a model that works on clean training data is easy. Building one that do
 - Production race prediction script (handles sprint weekends)
 - Improved team change blending (realistic capping)
 
----
 
 ## Contact
 
@@ -500,7 +489,6 @@ Building a model that works on clean training data is easy. Building one that do
 
 Happy to chat about ML, F1, or how many times I broke this before it worked!
 
----
 
 **Last Updated:** November 28, 2025  
 **Status:** Production-ready with robust missing data handling  

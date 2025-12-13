@@ -48,7 +48,6 @@ app.add_middleware(
 # Initialize predictor (will use dynamic loading)
 predictor = None
 
-
 @app.on_event("startup")
 async def startup_event():
     """Load models on startup."""
@@ -61,19 +60,17 @@ async def startup_event():
         version = get_model_version()
         
         logger.info(f"✅ Predictor initialized successfully")
-        logger.info(f"📦 Active model version: {version}")
-        logger.info(f"🤖 Dynamic loading: ENABLED")
+        logger.info(f" Active model version: {version}")
+        logger.info(f" Dynamic loading: ENABLED")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize predictor: {e}")
         raise
 
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    logger.info("👋 Shutting down F1 Predictor API...")
-
+    logger.info(" Shutting down F1 Predictor API...")
 
 @app.get("/", tags=["General"])
 async def root():
@@ -83,7 +80,7 @@ async def root():
         metadata = get_model_metadata()
         
         return {
-            "message": "🏎️ F1 Qualifying Classifier API",
+            "message": "F1 Qualifying Classifier API",
             "version": API_VERSION,
             "model_version": version,
             "self_learning": True,
@@ -96,12 +93,11 @@ async def root():
         }
     except:
         return {
-            "message": "🏎️ F1 Qualifying Classifier API",
+            "message": "F1 Qualifying Classifier API",
             "version": API_VERSION,
             "models": ["Q3 Binary", "Top 3 Binary", "Q2 Multi-class"],
             "docs": "/docs"
         }
-
 
 @app.get("/health", response_model=HealthResponse, tags=["General"])
 async def health_check():
@@ -130,7 +126,6 @@ async def health_check():
         features_count=len(predictor.features)
     )
 
-
 @app.get("/model/info", response_model=ModelInfoResponse, tags=["Model"])
 async def get_model_info():
     """Get model information."""
@@ -151,7 +146,6 @@ async def get_model_info():
         pass
     
     return ModelInfoResponse(**info)
-
 
 @app.post("/predict/q3", response_model=Q3PredictionResponse, tags=["Prediction"])
 async def predict_q3(request: PredictionRequest):
@@ -211,7 +205,6 @@ async def predict_q3(request: PredictionRequest):
         logger.error(f"Q3 prediction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-
 @app.post("/predict/top3", response_model=Top3PredictionResponse, tags=["Prediction"])
 async def predict_top3(request: PredictionRequest):
     """
@@ -270,7 +263,6 @@ async def predict_top3(request: PredictionRequest):
         logger.error(f"Top 3 prediction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-
 @app.post("/predict/round", response_model=Q2PredictionResponse, tags=["Prediction"])
 async def predict_round(request: PredictionRequest):
     """
@@ -328,7 +320,6 @@ async def predict_round(request: PredictionRequest):
     except Exception as e:
         logger.error(f"Round prediction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
 
 @app.post("/predict/all", tags=["Prediction"])
 async def predict_all(request: PredictionRequest):
@@ -408,7 +399,6 @@ async def predict_all(request: PredictionRequest):
         logger.error(f"Combined prediction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
-
 @app.get("/drivers", tags=["Reference"])
 async def list_drivers():
     """List all available drivers."""
@@ -418,7 +408,6 @@ async def list_drivers():
     drivers = sorted(predictor.historical_data['driver'].unique().tolist())
     return {"drivers": drivers, "count": len(drivers)}
 
-
 @app.get("/circuits", tags=["Reference"])
 async def list_circuits():
     """List all available circuits."""
@@ -427,7 +416,6 @@ async def list_circuits():
     
     circuits = sorted(predictor.historical_data['event'].unique().tolist())
     return {"circuits": circuits, "count": len(circuits)}
-
 
 # NEW ENDPOINTS for self-learning system
 
@@ -458,7 +446,6 @@ async def force_reload_models():
     except Exception as e:
         logger.error(f"Reload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Reload failed: {str(e)}")
-
 
 @app.get("/model/version", tags=["Model"])
 async def get_current_version():
