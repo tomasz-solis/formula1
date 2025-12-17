@@ -1,5 +1,17 @@
 # Formula 1 Qualifying Predictor
 
+## ⚠️ Important Notice - 2026 Season Compatibility
+
+**This project is designed for F1 seasons 2022-2025** and uses the current technical and sporting regulations as its foundation.
+
+**For 2026 onwards:** Major regulation changes (new power units, aerodynamics, etc.) will require significant model retraining and feature engineering updates. This codebase will remain as a reference for 2022-2025 analysis end serve as a baseline for 2027 or later seasons (once the cars development stabilize).
+
+**Updated Repository:** For 2026+ season compatibility, see [[F1-2026-predictor](https://github.com/tomasz-solis/f1-2026-predictions)] which accounts for the new technical regulations.
+
+This project remains fully functional for historical F1 analysis and serves as a complete example of production ML for motorsport analytics in a stable technical regulations conditions.
+
+---
+
 Predicting F1 qualifying outcomes using machine learning. This started as a way to learn ML properly - turns out predicting exact grid positions is basically impossible (chaos theory is real!), but predicting who makes Q3 or podium? That works pretty well.
 
 **Current Models:** Q3: 74% accurate | Top 3: 89% accurate | Round: 75% accurate
