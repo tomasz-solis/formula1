@@ -341,7 +341,7 @@ def get_circuit_corner_profile(
     except Exception as e:
         event = session.event.get("EventName", "Unknown")
         name = getattr(session, "name", "Unknown")
-        raise ValueError(f"⚠️ Failed to compute corner profile: {event} {name} – {e}")
+        raise ValueError(f"Failed to compute corner profile: {event} {name}: {e}")
 
 # HIGHER-LEVEL PROFILING PIPELINES
 
@@ -541,7 +541,7 @@ def _build_circuit_profile_df(
     if not skipped.empty:
         tqdm.write("\n⚠️ Skipped sessions:")
         for _, row in skipped.iterrows():
-            tqdm.write(f"⚠️  - {row['year']} {row['event']} {row['session']} – {row['reason']}")
+            tqdm.write(f"Skipped: {row['year']} {row['event']} {row['session']}: {row['reason']}")
 
     return profiles, skipped
     
